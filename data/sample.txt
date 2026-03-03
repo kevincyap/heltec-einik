@@ -1,0 +1,31 @@
+The Art of Reading
+
+In the beginning, there were stories. Told around campfires, whispered between friends, and eventually written down on paper for all to enjoy.
+
+Reading has always been one of humanity's greatest pleasures. A good book can transport you to distant lands, introduce you to fascinating characters, and teach you things you never knew.
+
+This small e-ink reader brings the joy of reading to the palm of your hand. With its crisp display and long battery life, you can enjoy your favorite texts anywhere.
+
+Chapter 1: Getting Started
+
+Welcome to your new e-ink reader. The display you are looking at uses electronic ink, which means it only uses power when the page changes. Once text is displayed, it stays visible even if the device is powered off.
+
+Navigation is simple. Press the button briefly to turn to the next page. Hold the button longer to go back to the previous page. Hold it even longer to return to the book selection menu.
+
+Chapter 2: About E-Ink
+
+Electronic ink displays work by moving tiny charged particles between two layers. Black particles move to the surface to form text and images, while white particles move to the back.
+
+Unlike traditional screens, e-ink displays do not emit light. This makes them comfortable to read in direct sunlight, just like reading a printed page. Your eyes will thank you during long reading sessions.
+
+The display supports partial refresh, which means page turns happen quickly without the full screen flashing. Every few pages, a full refresh occurs to keep the display crisp and clear.
+
+Chapter 3: Adding Books
+
+To add new books to your reader, place text files in the data folder of the project and upload the filesystem image using the command: pio run --target uploadfs
+
+Books are stored in the internal flash memory of the device. With several megabytes of storage available, you can carry dozens of books with you wherever you go.
+
+The End
+
+Thank you for reading this sample text. We hope you enjoy your mini e-ink reader. Happy reading!

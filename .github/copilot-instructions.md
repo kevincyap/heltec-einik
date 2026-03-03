@@ -36,9 +36,10 @@ pio test -e vision-master-e213 --filter "test_suite_name"
 
 ## Architecture
 
-- **`src/main.cpp`** — Entry point. Manages app state (menu vs reading), button dispatch, and deep sleep.
+- **`src/main.cpp`** — Entry point. Manages app state (menu vs reading vs upload), button dispatch, and deep sleep.
 - **`src/reader.cpp`** — Core text engine. Loads `.txt` from LittleFS into PSRAM, paginates with word-wrapping using font glyph metrics, renders pages with partial refresh.
-- **`src/menu.cpp`** — Book selection UI. Enumerates `.txt` files, renders scrollable list with inverted highlight.
+- **`src/menu.cpp`** — Book selection UI. Enumerates `.txt` files, renders scrollable list with inverted highlight. Includes "Upload Books" option.
+- **`src/wifi_upload.cpp`** — WiFi AP mode + captive portal + ESPAsyncWebServer for wireless file upload. Embedded HTML/JS web UI with file list, upload progress bar, and delete.
 - **`src/button.cpp`** — Polling-based button handler with debounce. Short press (<600ms) = next, long press (≥600ms) = prev, very long (≥2s) = menu.
 - **`src/state.cpp`** — Binary state persistence to LittleFS. Saves filename + page offset, restores on boot/wake.
 - **`include/config.h`** — All tuneable constants (pins, timings, layout margins, refresh interval).

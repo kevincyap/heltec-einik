@@ -7,6 +7,7 @@
 #include "reader.h"
 #include "state.h"
 #include "menu.h"
+#include "wifi_upload.h"
 
 DISPLAY_TYPE display;
 
@@ -20,9 +21,31 @@ static void enter_sleep() {
   esp_deep_sleep_start();
 }
 
+static void enter_upload_mode() {
+  reader_close();  // Free text buffer to save RAM for WiFi
+  wifi_upload_start(display);
+
+  // Process DNS + wait for button press to exit
+  while (wifi_upload_active()) {
+    wifi_upload_tick();
+    ButtonEvent evt = button_poll();
+    if (evt == BTN_SHORT || evt == BTN_LONG || evt == BTN_MENU) {
+      wifi_upload_stop();
+      break;
+    }
+    delay(1);
+  }
+}
+
 static void open_menu() {
   char selected[64];
   if (menu_show(display, selected, sizeof(selected))) {
+    if (selected[0] == '\0') {
+      // Upload mode requested
+      enter_upload_mode();
+      open_menu();  // Return to menu after upload
+      return;
+    }
     reader_close();
     if (reader_open(display, selected)) {
       state_save(reader_filename(), reader_current_page());

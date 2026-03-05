@@ -34,7 +34,9 @@ static int read_battery_percent() {
 
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     uint32_t adc_mv = (uint32_t)analogReadMilliVolts(BATTERY_ADC_PIN);
+    Serial.printf("[BAT] GPIO%d raw=%u mV\n", BATTERY_ADC_PIN, adc_mv);
     if (adc_mv == 0) {
+      Serial.println("[BAT] FAIL: raw ADC read returned 0");
       has_valid_battery = false;
       retry_interval_ms = 10000;
       last_sample_ms = now;
@@ -44,9 +46,16 @@ static int read_battery_percent() {
     float battery_mv = adc_mv * BATTERY_DIVIDER_RATIO;
     bool plausible = (battery_mv >= (BATTERY_EMPTY_MV - 200) && battery_mv <= (BATTERY_FULL_MV + 300));
     bool stable = (last_battery_mv > 0.0f) && (fabsf(battery_mv - last_battery_mv) <= 120.0f);
+    Serial.printf("[BAT] battery_mv=%.1f (ratio=%.2f) plausible=%d stable=%d last_mv=%.1f\n",
+                  battery_mv, BATTERY_DIVIDER_RATIO, plausible ? 1 : 0, stable ? 1 : 0, last_battery_mv);
+    Serial.printf("[BAT] expected range: %.0f - %.0f mV\n",
+                  (float)(BATTERY_EMPTY_MV - 200), (float)(BATTERY_FULL_MV + 300));
     last_battery_mv = battery_mv;
 
     if (!plausible || !stable) {
+      Serial.printf("[BAT] FAIL: %s%s\n",
+                    plausible ? "" : "out of plausible range ",
+                    stable    ? "" : "unstable (first sample or big jump)");
       has_valid_battery = false;
       retry_interval_ms = 10000;
       last_sample_ms = now;
@@ -61,6 +70,7 @@ static int read_battery_percent() {
     has_valid_battery = true;
     retry_interval_ms = 30000;
     last_sample_ms = now;
+    Serial.printf("[BAT] OK: %d%%\n", cached_percent);
     return cached_percent;
   #else
     return -1;

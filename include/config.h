@@ -21,7 +21,7 @@
 #define SLEEP_TIMEOUT_MS  (5UL * 60UL * 1000UL)
 #define MAIN_LOOP_IDLE_DELAY_MS 25
 #define SLEEP_AFTER_PAGE_TURN 1
-#define SLEEP_AFTER_PAGE_TURN_DELAY_MS 10000
+#define SLEEP_AFTER_PAGE_TURN_DELAY_MS 5000
 #define WAKE_BUTTON_RELEASE_TIMEOUT_MS 3000
 
 // Auto-exit upload mode to avoid leaving WiFi active accidentally
@@ -38,11 +38,13 @@
 #define PARTIAL_CLEANUP_EXTRA_UPDATES 1
 
 // -- Battery indicator (reader footer) --
-#define BATTERY_INDICATOR_ENABLED 0
-#define BATTERY_ADC_PIN           A0
-#define BATTERY_DIVIDER_RATIO     2.0f
-#define BATTERY_EMPTY_MV          3300
-#define BATTERY_FULL_MV           4200
+// E213 / T190: battery voltage on GPIO 37.
+// WARNING: Do NOT use A0 (GPIO 1) — that is the e-ink BUSY pin on E213.
+#define BATTERY_INDICATOR_ENABLED  0
+#define BATTERY_ADC_PIN            37    // GPIO 37 — free ADC pin on E213/T190
+#define BATTERY_DIVIDER_RATIO      2.0f  // Adjust if your hardware differs
+#define BATTERY_EMPTY_MV           3300
+#define BATTERY_FULL_MV            4200
 
 // -- WiFi secrets/config --
 // Keep personal WiFi credentials in `wifi_secrets.local.h` (gitignored).

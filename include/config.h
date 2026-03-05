@@ -14,14 +14,36 @@
 // -- Button (GPIO 21 = USER button on Vision Master) --
 #define USER_BUTTON_PIN   21
 #define DEBOUNCE_MS       50
-#define LONG_PRESS_MS     600
+#define LONG_PRESS_MS     400
 #define MENU_PRESS_MS     2000
 
 // -- Power management --
 #define SLEEP_TIMEOUT_MS  (5UL * 60UL * 1000UL)
+#define MAIN_LOOP_IDLE_DELAY_MS 25
+#define SLEEP_AFTER_PAGE_TURN 1
+#define SLEEP_AFTER_PAGE_TURN_DELAY_MS 10000
+#define WAKE_BUTTON_RELEASE_TIMEOUT_MS 3000
+
+// Auto-exit upload mode to avoid leaving WiFi active accidentally
+#define UPLOAD_AUTO_EXIT_MS (10UL * 60UL * 1000UL)
+#define UPLOAD_IDLE_DELAY_MS 10
 
 // -- State persistence --
 #define STATE_FILE        "/state.dat"
 
 // -- Partial refresh management --
-#define FULL_REFRESH_INTERVAL 10
+// Set to 0 to disable full-refresh flashes during reading.
+// Set to a positive value (e.g. 20-50) if you want occasional full cleanup.
+#define FULL_REFRESH_INTERVAL 25
+#define PARTIAL_CLEANUP_EXTRA_UPDATES 1
+
+// -- Battery indicator (reader footer) --
+#define BATTERY_INDICATOR_ENABLED 0
+#define BATTERY_ADC_PIN           A0
+#define BATTERY_DIVIDER_RATIO     2.0f
+#define BATTERY_EMPTY_MV          3300
+#define BATTERY_FULL_MV           4200
+
+// -- WiFi secrets/config --
+// Keep personal WiFi credentials in `wifi_secrets.local.h` (gitignored).
+#include "wifi_secrets.h"

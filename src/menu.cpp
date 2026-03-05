@@ -13,6 +13,7 @@ static const char UPLOAD_ENTRY[] = "[Upload Books]";
 static void render_menu(DISPLAY_TYPE &display, char files[][64], int count,
                         bool has_upload, int sel) {
   display.clearMemory();
+  display.fillRect(0, 0, display.width(), display.height(), WHITE);
 
   // Title bar (small default font)
   display.setFont(NULL);
@@ -54,6 +55,8 @@ static void render_menu(DISPLAY_TYPE &display, char files[][64], int count,
   }
 
   display.setTextColor(BLACK);
+
+  display.fastmodeOn();
   display.update();
 }
 
@@ -81,29 +84,6 @@ bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len) {
     f = root.openNextFile();
   }
   root.close();
-
-  if (file_count == 0) {
-    display.clearMemory();
-    display.setFont(&FreeSans9pt7b);
-    display.setTextColor(BLACK);
-    display.setCursor(MARGIN_X, 40);
-    display.print("No .txt files");
-    display.setCursor(MARGIN_X, 60);
-    display.print("found. Upload via:");
-    display.setFont(NULL);
-    display.setTextSize(1);
-    display.setCursor(MARGIN_X, 80);
-    display.print("pio run -t uploadfs");
-    display.update();
-    return false;
-  }
-
-  // Auto-select if only one file
-  if (file_count == 1) {
-    strncpy(selected, files[0], max_len - 1);
-    selected[max_len - 1] = '\0';
-    return true;
-  }
 
   int sel = 0;
   bool has_upload = true;

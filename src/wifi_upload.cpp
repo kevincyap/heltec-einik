@@ -3,17 +3,21 @@
 #include <DNSServer.h>
 #include <LittleFS.h>
 #include <ESPAsyncWebServer.h>
+#include <string.h>
 #include "config.h"
 #include "wifi_upload.h"
 #include <Fonts/FreeSans9pt7b.h>
 
-static const char *AP_SSID = "EinkReader";
+static const char *AP_SSID = WIFI_UPLOAD_AP_SSID;
 static const IPAddress AP_IP(192, 168, 4, 1);
 
 static AsyncWebServer *_server = nullptr;
 static DNSServer *_dns = nullptr;
 static bool _active = false;
+static bool _using_ap_mode = true;
 static DISPLAY_TYPE *_display_ptr = nullptr;
+static IPAddress _host_ip(0, 0, 0, 0);
+static char _active_ssid[33] = {};
 
 // Upload status shown on e-ink after each file
 static char _last_upload[64] = {};
@@ -115,20 +119,31 @@ static void draw_upload_screen(const char *status_line = nullptr) {
 
   display.setCursor(MARGIN_X, 32);
   display.print("WiFi: ");
-  display.print(AP_SSID);
+  display.print(_active_ssid);
 
   display.setCursor(MARGIN_X, 46);
   display.print("Open: http://");
-  display.print(AP_IP.toString());
+  display.print(_host_ip.toString());
 
-  display.setCursor(MARGIN_X, 62);
-  display.print("Connect phone/laptop to");
+  if (_using_ap_mode) {
+    display.setCursor(MARGIN_X, 62);
+    display.print("Connect phone/laptop to");
 
-  display.setCursor(MARGIN_X, 74);
-  display.print("the WiFi above, then open");
+    display.setCursor(MARGIN_X, 74);
+    display.print("the WiFi above, then open");
 
-  display.setCursor(MARGIN_X, 86);
-  display.print("the URL in a browser.");
+    display.setCursor(MARGIN_X, 86);
+    display.print("the URL in a browser.");
+  } else {
+    display.setCursor(MARGIN_X, 62);
+    display.print("Use phone/laptop on same");
+
+    display.setCursor(MARGIN_X, 74);
+    display.print("router WiFi, then open");
+
+    display.setCursor(MARGIN_X, 86);
+    display.print("the URL in a browser.");
+  }
 
   if (status_line) {
     display.setCursor(MARGIN_X, 102);
@@ -148,7 +163,7 @@ static void handle_root(AsyncWebServerRequest *request) {
 }
 
 static void handle_captive(AsyncWebServerRequest *request) {
-  request->redirect("http://" + AP_IP.toString());
+  request->redirect("http://" + _host_ip.toString());
 }
 
 static void handle_file_list(AsyncWebServerRequest *request) {
@@ -223,22 +238,61 @@ static void handle_upload_data(AsyncWebServerRequest *request, String filename,
   }
 }
 
+static bool start_wifi_sta() {
+  if (!WIFI_UPLOAD_USE_STA)
+    return false;
+  if (strlen(WIFI_UPLOAD_STA_SSID) == 0)
+    return false;
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_UPLOAD_STA_SSID, WIFI_UPLOAD_STA_PASS);
+
+  unsigned long start_ms = millis();
+  while (WiFi.status() != WL_CONNECTED && (millis() - start_ms) < WIFI_UPLOAD_STA_TIMEOUT_MS) {
+    delay(250);
+  }
+
+  if (WiFi.status() != WL_CONNECTED)
+    return false;
+
+  _using_ap_mode = false;
+  _host_ip = WiFi.localIP();
+  strncpy(_active_ssid, WIFI_UPLOAD_STA_SSID, sizeof(_active_ssid) - 1);
+  _active_ssid[sizeof(_active_ssid) - 1] = '\0';
+
+  Serial.printf("WiFi STA connected: %s at %s\n", _active_ssid, _host_ip.toString().c_str());
+  return true;
+}
+
+static void start_wifi_ap() {
+  WiFi.mode(WIFI_AP);
+  WiFi.softAPConfig(AP_IP, AP_IP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(AP_SSID);
+  delay(100);
+
+  _using_ap_mode = true;
+  _host_ip = WiFi.softAPIP();
+  strncpy(_active_ssid, AP_SSID, sizeof(_active_ssid) - 1);
+  _active_ssid[sizeof(_active_ssid) - 1] = '\0';
+
+  Serial.printf("WiFi AP started: %s at %s\n", AP_SSID, _host_ip.toString().c_str());
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 void wifi_upload_start(DISPLAY_TYPE &display) {
   if (_active) return;
   _display_ptr = &display;
 
-  // Start WiFi AP
-  WiFi.mode(WIFI_AP);
-  WiFi.softAPConfig(AP_IP, AP_IP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(AP_SSID);
-  delay(100);
-  Serial.printf("AP started: %s at %s\n", AP_SSID, WiFi.softAPIP().toString().c_str());
+  if (!start_wifi_sta()) {
+    start_wifi_ap();
 
-  // DNS for captive portal
-  _dns = new DNSServer();
-  _dns->start(53, "*", AP_IP);
+    // DNS for captive portal (AP mode only)
+    _dns = new DNSServer();
+    _dns->start(53, "*", _host_ip);
+  }
+
+  WiFi.setSleep(true);
 
   // Web server
   _server = new AsyncWebServer(80);
@@ -247,11 +301,17 @@ void wifi_upload_start(DISPLAY_TYPE &display) {
   _server->on("/files", HTTP_DELETE, handle_file_delete);
   _server->on("/upload", HTTP_POST, handle_upload_complete, handle_upload_data);
 
-  // Captive portal redirects
-  _server->on("/generate_204", HTTP_GET, handle_captive);     // Android
-  _server->on("/hotspot-detect.html", HTTP_GET, handle_captive); // Apple
-  _server->on("/connecttest.txt", HTTP_GET, handle_captive);  // Windows
-  _server->onNotFound(handle_captive);
+  if (_using_ap_mode) {
+    // Captive portal redirects
+    _server->on("/generate_204", HTTP_GET, handle_captive);     // Android
+    _server->on("/hotspot-detect.html", HTTP_GET, handle_captive); // Apple
+    _server->on("/connecttest.txt", HTTP_GET, handle_captive);  // Windows
+    _server->onNotFound(handle_captive);
+  } else {
+    _server->onNotFound([](AsyncWebServerRequest *request) {
+      request->send(404, "text/plain", "Not found");
+    });
+  }
 
   _server->begin();
   _active = true;
@@ -277,11 +337,15 @@ void wifi_upload_stop() {
     _dns = nullptr;
   }
 
-  WiFi.softAPdisconnect(true);
+  if (_using_ap_mode)
+    WiFi.softAPdisconnect(true);
+  else
+    WiFi.disconnect(true, true);
   WiFi.mode(WIFI_OFF);
   _active = false;
   _display_ptr = nullptr;
   _last_upload[0] = '\0';
+  _active_ssid[0] = '\0';
 
   Serial.println("Upload mode stopped");
 }

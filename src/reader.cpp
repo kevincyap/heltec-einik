@@ -500,6 +500,145 @@ static void paginate(int disp_w, int disp_h) {
   f.close();
 }
 
+// ── Page-offset cache ─────────────────────────────────────────────────────
+
+#pragma pack(push, 1)
+struct PageCacheHeader {
+  uint8_t  magic[4];
+  uint32_t file_size;
+  uint16_t disp_w;
+  uint16_t disp_h;
+  uint32_t num_pages;
+};
+#pragma pack(pop)
+
+static const uint8_t CACHE_MAGIC[4] = {'E', 'P', 'I', 'C'};
+
+static void cache_path_for(const char *book_path, char *out, size_t out_len) {
+  strncpy(out, book_path, out_len - 1);
+  out[out_len - 1] = '\0';
+  char *dot = strrchr(out, '.');
+  if (dot && dot > out) {
+    strncpy(dot, ".pc", out_len - (size_t)(dot - out));
+    out[out_len - 1] = '\0';
+  } else {
+    size_t cur_len = strlen(out);
+    if (cur_len + 3 < out_len)
+      memcpy(out + cur_len, ".pc\0", 4);
+  }
+}
+
+static bool load_page_cache(int disp_w, int disp_h) {
+  char cache_path[72];
+  cache_path_for(_filename, cache_path, sizeof(cache_path));
+
+  File f = LittleFS.open(cache_path, "r");
+  if (!f) return false;
+
+  PageCacheHeader hdr;
+  if (f.read((uint8_t *)&hdr, sizeof(hdr)) != sizeof(hdr)) {
+    f.close();
+    return false;
+  }
+
+  if (memcmp(hdr.magic, CACHE_MAGIC, 4) != 0 ||
+      hdr.file_size != (uint32_t)_file_size ||
+      hdr.disp_w != (uint16_t)disp_w ||
+      hdr.disp_h != (uint16_t)disp_h ||
+      hdr.num_pages == 0) {
+    f.close();
+    return false;
+  }
+
+  free(_page_offsets);
+  _page_offsets = nullptr;
+  _page_capacity = 0;
+
+  if (!ensure_page_capacity((int)hdr.num_pages)) {
+    f.close();
+    return false;
+  }
+
+  size_t bytes = (size_t)hdr.num_pages * sizeof(int);
+  if (f.read((uint8_t *)_page_offsets, bytes) != bytes) {
+    f.close();
+    free(_page_offsets);
+    _page_offsets = nullptr;
+    _page_capacity = 0;
+    return false;
+  }
+
+  _num_pages = (int)hdr.num_pages;
+  f.close();
+  Serial.printf("Page cache hit: %s (%d pages)\n", cache_path, _num_pages);
+  return true;
+}
+
+static void save_page_cache(int disp_w, int disp_h) {
+  if (_num_pages == 0 || !_page_offsets) return;
+
+  char cache_path[72];
+  cache_path_for(_filename, cache_path, sizeof(cache_path));
+
+  File f = LittleFS.open(cache_path, "w");
+  if (!f) {
+    Serial.printf("Cache write failed: %s\n", cache_path);
+    return;
+  }
+
+  PageCacheHeader hdr;
+  memcpy(hdr.magic, CACHE_MAGIC, 4);
+  hdr.file_size  = (uint32_t)_file_size;
+  hdr.disp_w     = (uint16_t)disp_w;
+  hdr.disp_h     = (uint16_t)disp_h;
+  hdr.num_pages  = (uint32_t)_num_pages;
+
+  f.write((uint8_t *)&hdr, sizeof(hdr));
+  f.write((uint8_t *)_page_offsets, (size_t)_num_pages * sizeof(int));
+  f.close();
+  Serial.printf("Page cache saved: %s (%d pages)\n", cache_path, _num_pages);
+}
+
+// ── Fast-wake helpers ─────────────────────────────────────────────────────
+
+void reader_get_page_window(int *out_page, int *out_num_pages,
+                             uint32_t *out_file_size, int window[4]) {
+  *out_page      = _current_page;
+  *out_num_pages = _num_pages;
+  *out_file_size = (uint32_t)_file_size;
+  window[0] = (_current_page - 1 >= 0)            ? _page_offsets[_current_page - 1] : 0;
+  window[1] = _page_offsets[_current_page];
+  window[2] = (_current_page + 1 < _num_pages)    ? _page_offsets[_current_page + 1] : 0;
+  window[3] = (_current_page + 2 < _num_pages)    ? _page_offsets[_current_page + 2] : 0;
+}
+
+bool reader_open_fast(const char *filename, uint32_t file_size, int num_pages,
+                      int current_page, const int page_window[4]) {
+  reader_close();
+
+  if (!filename || filename[0] == '\0' || num_pages <= 0 || file_size == 0)
+    return false;
+
+  if (!ensure_page_capacity(num_pages))
+    return false;
+
+  memset(_page_offsets, 0, (size_t)num_pages * sizeof(int));
+  _num_pages = num_pages;
+  _file_size = (size_t)file_size;
+  strncpy(_filename, filename, sizeof(_filename) - 1);
+  _filename[sizeof(_filename) - 1] = '\0';
+
+  // Place the 4 nearby offsets at their correct indices in the full array
+  if (current_page - 1 >= 0)         _page_offsets[current_page - 1] = page_window[0];
+                                      _page_offsets[current_page]     = page_window[1];
+  if (current_page + 1 < num_pages)  _page_offsets[current_page + 1] = page_window[2];
+  if (current_page + 2 < num_pages)  _page_offsets[current_page + 2] = page_window[3];
+
+  _current_page = constrain(current_page, 0, num_pages - 1);
+  Serial.printf("Fast open: %s page %d/%d\n", filename, _current_page + 1, num_pages);
+  return true;
+}
+
 bool reader_open(DISPLAY_TYPE &display, const char *filename, int start_page) {
   reader_close();
 
@@ -519,7 +658,11 @@ bool reader_open(DISPLAY_TYPE &display, const char *filename, int start_page) {
 
   strncpy(_filename, filename, sizeof(_filename) - 1);
   _filename[sizeof(_filename) - 1] = '\0';
-  paginate(display.width(), display.height());
+  if (!load_page_cache(display.width(), display.height())) {
+    paginate(display.width(), display.height());
+    if (_num_pages > 0)
+      save_page_cache(display.width(), display.height());
+  }
   if (_num_pages == 0) {
     Serial.println("Failed to allocate pagination buffer");
     reader_close();
@@ -620,6 +763,7 @@ void reader_render(DISPLAY_TYPE &display) {
   display.setCursor(display.width() - iw - 2, display.height() - ih - 2);
   display.print(indicator);
 
+#if BATTERY_INDICATOR_ENABLED
   int battery_pct = read_battery_percent();
   char battery_label[20];
   if (battery_pct >= 0)
@@ -632,6 +776,7 @@ void reader_render(DISPLAY_TYPE &display) {
   display.getTextBounds(battery_label, 0, 0, &bx, &by, &bw, &bh);
   display.setCursor(2, display.height() - bh - 2);
   display.print(battery_label);
+#endif
 
   display.fastmodeOn();
 
@@ -672,4 +817,26 @@ void reader_close() {
   _num_pages = 0;
   _current_page = 0;
   _filename[0] = '\0';
+}
+
+void reader_delete_book_cache(const char *filename) {
+  char cache_path[72];
+  cache_path_for(filename, cache_path, sizeof(cache_path));
+  if (LittleFS.exists(cache_path)) {
+    LittleFS.remove(cache_path);
+    Serial.printf("Cache deleted: %s\n", cache_path);
+  }
+}
+
+void reader_load_full_cache(int disp_w, int disp_h) {
+  if (_filename[0] == '\0' || _file_size == 0) return;
+  int saved_page = _current_page;
+  if (!load_page_cache(disp_w, disp_h)) {
+    Serial.println("Full cache miss after fast wake; repaginating");
+    paginate(disp_w, disp_h);
+    if (_num_pages > 0)
+      save_page_cache(disp_w, disp_h);
+  }
+  _current_page = constrain(saved_page, 0, max(0, _num_pages - 1));
+  Serial.printf("Full offsets loaded: %d pages, current=%d\n", _num_pages, _current_page);
 }

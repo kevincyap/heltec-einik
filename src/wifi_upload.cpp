@@ -6,6 +6,7 @@
 #include <string.h>
 #include "config.h"
 #include "wifi_upload.h"
+#include "reader.h"
 #include <Fonts/FreeSans9pt7b.h>
 
 static const char *AP_SSID = WIFI_UPLOAD_AP_SSID;
@@ -22,6 +23,16 @@ static char _active_ssid[33] = {};
 // Upload status shown on e-ink after each file
 static char _last_upload[64] = {};
 static size_t _last_upload_size = 0;
+
+static bool has_txt_extension(const char *name) {
+  size_t len = strlen(name);
+  if (len < 4) return false;
+  const char *ext = name + len - 4;
+  return (ext[0] == '.' &&
+          (ext[1] == 't' || ext[1] == 'T') &&
+          (ext[2] == 'x' || ext[2] == 'X') &&
+          (ext[3] == 't' || ext[3] == 'T'));
+}
 
 // ── Embedded HTML ──────────────────────────────────────────────────────────
 
@@ -168,14 +179,16 @@ static void handle_captive(AsyncWebServerRequest *request) {
 
 static void handle_file_list(AsyncWebServerRequest *request) {
   String json = "{\"files\":[";
+  json.reserve(1536);
   File root = LittleFS.open("/");
   bool first = true;
   if (root && root.isDirectory()) {
     File f = root.openNextFile();
     while (f) {
       if (!f.isDirectory()) {
-        String name = f.name();
-        if (name.endsWith(".txt")) {
+        const char *raw_name = f.name();
+        if (has_txt_extension(raw_name)) {
+          String name = raw_name;
           if (!first) json += ",";
           // Ensure name has leading /
           if (name[0] != '/') name = "/" + name;
@@ -199,6 +212,7 @@ static void handle_file_delete(AsyncWebServerRequest *request) {
   String name = request->getParam("name")->value();
   if (LittleFS.exists(name)) {
     LittleFS.remove(name);
+    reader_delete_book_cache(name.c_str());
     request->send(200, "text/plain", "Deleted");
   } else {
     request->send(404, "text/plain", "File not found");

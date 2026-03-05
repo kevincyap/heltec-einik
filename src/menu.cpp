@@ -10,6 +10,16 @@
 
 static const char UPLOAD_ENTRY[] = "[Upload Books]";
 
+static bool has_txt_extension(const char *name) {
+  size_t len = strlen(name);
+  if (len < 4) return false;
+  const char *ext = name + len - 4;
+  return (ext[0] == '.' &&
+          (ext[1] == 't' || ext[1] == 'T') &&
+          (ext[2] == 'x' || ext[2] == 'X') &&
+          (ext[3] == 't' || ext[3] == 'T'));
+}
+
 static void render_menu(DISPLAY_TYPE &display, char files[][64], int count,
                         bool has_upload, int sel) {
   display.clearMemory();
@@ -70,13 +80,13 @@ bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len) {
   File f = root.openNextFile();
   while (f && file_count < MAX_FILES) {
     if (!f.isDirectory()) {
-      String name = f.name();
-      if (name.endsWith(".txt")) {
+      const char *name = f.name();
+      if (has_txt_extension(name)) {
         // Normalize path to always have leading /
         if (name[0] != '/')
-          snprintf(files[file_count], 64, "/%s", name.c_str());
+          snprintf(files[file_count], 64, "/%s", name);
         else
-          strncpy(files[file_count], name.c_str(), 64);
+          strncpy(files[file_count], name, 64);
         files[file_count][63] = '\0';
         file_count++;
       }

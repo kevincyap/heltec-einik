@@ -14,6 +14,13 @@ static bool _sleep_after_turn_pending = false;
 static unsigned long _sleep_after_turn_started_ms = 0;
 RTC_DATA_ATTR static bool _wake_turn_page_pending = false;
 
+// Fast-wake data: persisted across deep sleep to avoid state_load + load_page_cache
+RTC_DATA_ATTR static char     _rtc_filename[64];
+RTC_DATA_ATTR static uint32_t _rtc_file_size;
+RTC_DATA_ATTR static int      _rtc_num_pages;
+RTC_DATA_ATTR static int      _rtc_page;
+RTC_DATA_ATTR static int      _rtc_page_window[4]; // offsets: [page-1, page, page+1, page+2]
+
 enum SleepReason {
   SLEEP_REASON_GENERIC,
   SLEEP_REASON_TIMEOUT_READING,
@@ -51,8 +58,14 @@ static void enter_sleep(SleepReason reason = SLEEP_REASON_GENERIC) {
                 sleep_reason_name(reason),
                 _wake_turn_page_pending ? 1 : 0);
 
-  if (reader_is_open())
+  if (reader_is_open()) {
     state_save(reader_filename(), reader_current_page());
+    if (reason == SLEEP_REASON_AFTER_TURN) {
+      strncpy(_rtc_filename, reader_filename(), sizeof(_rtc_filename) - 1);
+      _rtc_filename[sizeof(_rtc_filename) - 1] = '\0';
+      reader_get_page_window(&_rtc_page, &_rtc_num_pages, &_rtc_file_size, _rtc_page_window);
+    }
+  }
 
   Serial.println("Entering deep sleep...");
   Serial.flush();
@@ -153,6 +166,29 @@ void setup() {
     return;
   }
   Serial.println("LittleFS mounted.");
+
+  // Fast wake path: skip state_load + load_page_cache entirely using RTC data
+  if (should_turn_page_after_wake && _rtc_filename[0] != '\0' && _rtc_num_pages > 0) {
+    Serial.printf("Fast wake: %s page %d\n", _rtc_filename, _rtc_page);
+    if (reader_open_fast(_rtc_filename, _rtc_file_size, _rtc_num_pages,
+                         _rtc_page, _rtc_page_window)) {
+      reader_render(display);
+      bool turned = wake_prev_requested ? reader_prev_page() : reader_next_page();
+      if (turned) {
+        Serial.printf("Fast wake turn: %s -> page %d\n",
+                      wake_prev_requested ? "prev" : "next",
+                      reader_current_page());
+        reader_render(display);
+      }
+      state_save(reader_filename(), reader_current_page());
+      // Reload full offset array so subsequent page turns work correctly.
+      // Fast wake only populated 4 nearby offsets; all others are zeroed.
+      reader_load_full_cache(display.width(), display.height());
+      Serial.println("Fast wake render done");
+      return;
+    }
+    Serial.println("Fast wake failed; falling back to normal resume");
+  }
 
   // Try to resume from saved state
   ReadingState saved = state_load();

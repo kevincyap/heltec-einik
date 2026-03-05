@@ -7,6 +7,7 @@
 #include "config.h"
 #include "wifi_upload.h"
 #include "reader.h"
+#include "state.h"
 #include <Fonts/FreeSans9pt7b.h>
 
 static const char *AP_SSID = WIFI_UPLOAD_AP_SSID;
@@ -58,6 +59,9 @@ td:last-child{text-align:right;white-space:nowrap}
 .bar>div{height:100%;background:#2563eb;border-radius:2px;width:0%;transition:width .2s}
 #msg{margin:8px 0;font-weight:600;color:#16a34a}
 .space{color:#666;font-size:13px}
+select{width:100%;padding:6px 8px;margin:4px 0 10px;border:1px solid #ddd;border-radius:4px;font-size:14px}
+input[type=number]{padding:6px 8px;border:1px solid #ddd;border-radius:4px;font-size:14px}
+.ok{color:#16a34a;font-weight:600;margin-top:8px}
 </style>
 </head><body>
 <h2>&#128214; E-Ink Reader</h2>
@@ -74,17 +78,32 @@ td:last-child{text-align:right;white-space:nowrap}
 <b>Books on Device</b> <span class="space" id="space"></span>
 <table id="ft"><tr><td>Loading...</td></tr></table>
 </div>
+<div class="card">
+<b>Saved Bookmark</b>
+<div id="spos" style="margin:8px 0;color:#555">Loading...</div>
+<label>Book<select id="bsel"></select></label>
+<label>Page <input type="number" id="pnum" min="0" value="0" style="width:90px"></label>
+&nbsp;<button onclick="setPage()">Set Bookmark</button>
+<div id="smsg" class="ok"></div>
+</div>
 <script>
 function esc(s){let d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function fmt(b){return b<1024?b+' B':(b/1024).toFixed(1)+' KB'}
 function load(){
   fetch('/files').then(r=>r.json()).then(d=>{
     let h='';
+    let sel=document.getElementById('bsel');
+    let prev=sel.value;
+    sel.innerHTML='';
     d.files.forEach(f=>{
       h+='<tr><td>'+esc(f.name)+'</td><td>'+fmt(f.size)+
       ' <button class="del" onclick="del(\''+esc(f.name)+'\')">Delete</button></td></tr>';
+      let o=document.createElement('option');
+      o.value=f.name;o.textContent=f.name.replace(/^\//,'');
+      sel.appendChild(o);
     });
     if(!d.files.length) h='<tr><td>No books yet</td></tr>';
+    if(prev) sel.value=prev;
     document.getElementById('ft').innerHTML=h;
     document.getElementById('space').textContent=fmt(d.free)+' free';
   });
@@ -106,7 +125,33 @@ document.getElementById('uf').onsubmit=function(e){
   x.onerror=function(){msg.textContent='Network error';};
   x.open('POST','/upload');x.send(f);
 };
-load();
+function loadState(){
+  fetch('/state').then(r=>r.json()).then(d=>{
+    let el=document.getElementById('spos');
+    if(d.valid){
+      el.textContent='Current: '+d.filename.replace(/^\//,'')+' \u2014 page '+d.page;
+      let sel=document.getElementById('bsel');
+      if(sel.querySelector('option[value="'+d.filename+'"]')) sel.value=d.filename;
+      document.getElementById('pnum').value=d.page;
+    } else {
+      el.textContent='No bookmark saved';
+    }
+  });
+}
+function setPage(){
+  let n=document.getElementById('bsel').value;
+  let p=parseInt(document.getElementById('pnum').value)||0;
+  let msg=document.getElementById('smsg');
+  msg.textContent='';
+  if(!n){msg.textContent='No book selected';return;}
+  let fd=new URLSearchParams();
+  fd.append('filename',n);fd.append('page',p);
+  fetch('/state',{method:'POST',body:fd}).then(r=>{
+    if(r.ok){msg.textContent='Bookmark saved!';loadState();}
+    else r.text().then(t=>{msg.textContent='Error: '+t;});
+  });
+}
+load();loadState();
 </script>
 </body></html>
 )rawliteral";
@@ -252,6 +297,36 @@ static void handle_upload_data(AsyncWebServerRequest *request, String filename,
   }
 }
 
+static void handle_state_get(AsyncWebServerRequest *request) {
+  ReadingState s = state_load();
+  String json;
+  if (s.valid) {
+    json = "{\"valid\":true,\"filename\":\"";
+    json += s.filename;
+    json += "\",\"page\":";
+    json += String(s.page);
+    json += "}";
+  } else {
+    json = "{\"valid\":false}";
+  }
+  request->send(200, "application/json", json);
+}
+
+static void handle_state_set(AsyncWebServerRequest *request) {
+  if (!request->hasParam("filename", true) || !request->hasParam("page", true)) {
+    request->send(400, "text/plain", "Missing params");
+    return;
+  }
+  String filename = request->getParam("filename", true)->value();
+  int page = request->getParam("page", true)->value().toInt();
+  if (filename.length() == 0 || !LittleFS.exists(filename)) {
+    request->send(404, "text/plain", "File not found");
+    return;
+  }
+  state_save(filename.c_str(), page);
+  request->send(200, "text/plain", "OK");
+}
+
 static bool start_wifi_sta() {
   if (!WIFI_UPLOAD_USE_STA)
     return false;
@@ -314,6 +389,8 @@ void wifi_upload_start(DISPLAY_TYPE &display) {
   _server->on("/files", HTTP_GET, handle_file_list);
   _server->on("/files", HTTP_DELETE, handle_file_delete);
   _server->on("/upload", HTTP_POST, handle_upload_complete, handle_upload_data);
+  _server->on("/state", HTTP_GET, handle_state_get);
+  _server->on("/state", HTTP_POST, handle_state_set);
 
   if (_using_ap_mode) {
     // Captive portal redirects

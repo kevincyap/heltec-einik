@@ -15,7 +15,7 @@
 #define USER_BUTTON_PIN   21
 #define DEBOUNCE_MS       50
 #define LONG_PRESS_MS     400
-#define MENU_PRESS_MS     2000
+#define MENU_PRESS_MS     3000
 
 // -- Power management --
 #define SLEEP_TIMEOUT_MS  (5UL * 60UL * 1000UL)
@@ -38,11 +38,14 @@
 #define PARTIAL_CLEANUP_EXTRA_UPDATES 1
 
 // -- Battery indicator (reader footer) --
-// E213 / T190: battery voltage on GPIO 37.
+// Vision Master E213: VBAT sense = GPIO 7, ADC enable = GPIO 46 (active-high).
+// GPIO 46 drives the base of an S9013 NPN transistor. Drive HIGH to saturate
+// the transistor and complete the voltage divider; LOW to cut it off.
 // WARNING: Do NOT use A0 (GPIO 1) — that is the e-ink BUSY pin on E213.
-#define BATTERY_INDICATOR_ENABLED  0
-#define BATTERY_ADC_PIN            37    // GPIO 37 — free ADC pin on E213/T190
-#define BATTERY_DIVIDER_RATIO      2.0f  // Adjust if your hardware differs
+#define BATTERY_INDICATOR_ENABLED  1
+#define BATTERY_ADC_PIN            7      // GPIO 7 — VBAT sense
+#define BATTERY_ADC_CTRL_PIN       46     // GPIO 46 — ADC_CTRL, set INPUT to enable
+#define BATTERY_DIVIDER_RATIO      4.9f   // Onboard voltage divider scaling
 #define BATTERY_EMPTY_MV           3300
 #define BATTERY_FULL_MV            4200
 

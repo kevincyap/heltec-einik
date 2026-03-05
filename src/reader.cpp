@@ -19,7 +19,6 @@ static int read_battery_percent() {
   #ifdef ARDUINO_ARCH_ESP32
     static int cached_percent = -1;
     static bool has_valid_battery = false;
-    static float last_battery_mv = 0.0f;
     static unsigned long last_sample_ms = 0;
     static unsigned long retry_interval_ms = 5000;
     unsigned long now = millis();
@@ -32,8 +31,16 @@ static int read_battery_percent() {
       return has_valid_battery ? cached_percent : -1;
     }
 
+    // GPIO 46 drives the base of an S9013 NPN transistor.
+    // HIGH saturates the transistor (collector conducts) completing the
+    // voltage divider to GND so GPIO 7 can read the battery voltage.
+    // LOW cuts the transistor off, disconnecting the divider to save power.
+    pinMode(BATTERY_ADC_CTRL_PIN, OUTPUT);
+    digitalWrite(BATTERY_ADC_CTRL_PIN, HIGH);
+    delay(5); // allow divider to settle
     analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
     uint32_t adc_mv = (uint32_t)analogReadMilliVolts(BATTERY_ADC_PIN);
+    digitalWrite(BATTERY_ADC_CTRL_PIN, LOW); // cut transistor, stop divider current
     Serial.printf("[BAT] GPIO%d raw=%u mV\n", BATTERY_ADC_PIN, adc_mv);
     if (adc_mv == 0) {
       Serial.println("[BAT] FAIL: raw ADC read returned 0");
@@ -45,17 +52,12 @@ static int read_battery_percent() {
 
     float battery_mv = adc_mv * BATTERY_DIVIDER_RATIO;
     bool plausible = (battery_mv >= (BATTERY_EMPTY_MV - 200) && battery_mv <= (BATTERY_FULL_MV + 300));
-    bool stable = (last_battery_mv > 0.0f) && (fabsf(battery_mv - last_battery_mv) <= 120.0f);
-    Serial.printf("[BAT] battery_mv=%.1f (ratio=%.2f) plausible=%d stable=%d last_mv=%.1f\n",
-                  battery_mv, BATTERY_DIVIDER_RATIO, plausible ? 1 : 0, stable ? 1 : 0, last_battery_mv);
-    Serial.printf("[BAT] expected range: %.0f - %.0f mV\n",
-                  (float)(BATTERY_EMPTY_MV - 200), (float)(BATTERY_FULL_MV + 300));
-    last_battery_mv = battery_mv;
+    Serial.printf("[BAT] battery_mv=%.1f (ratio=%.2f) plausible=%d\n",
+                  battery_mv, BATTERY_DIVIDER_RATIO, plausible ? 1 : 0);
 
-    if (!plausible || !stable) {
-      Serial.printf("[BAT] FAIL: %s%s\n",
-                    plausible ? "" : "out of plausible range ",
-                    stable    ? "" : "unstable (first sample or big jump)");
+    if (!plausible) {
+      Serial.printf("[BAT] FAIL: out of range (expected %.0f-%.0f mV)\n",
+                    (float)(BATTERY_EMPTY_MV - 200), (float)(BATTERY_FULL_MV + 300));
       has_valid_battery = false;
       retry_interval_ms = 10000;
       last_sample_ms = now;

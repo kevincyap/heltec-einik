@@ -118,8 +118,21 @@ static bool open_menu() {
       continue;
     }
 
+    // Save current position before closing so it can be restored if the user
+    // returns to the same book from the menu.
+    if (reader_is_open()) {
+      state_save(reader_filename(), reader_current_page());
+    }
+
+    // Resume from saved position if the selected book matches the last saved state.
+    ReadingState saved = state_load();
+    int start_page = 0;
+    if (saved.valid && strncmp(saved.filename, selected, sizeof(saved.filename)) == 0) {
+      start_page = saved.page;
+    }
+
     reader_close();
-    if (reader_open(display, selected)) {
+    if (reader_open(display, selected, start_page)) {
       state_save(reader_filename(), reader_current_page());
       reader_render(display);
       return true;

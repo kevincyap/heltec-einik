@@ -362,7 +362,11 @@ struct TokenReader {
       if (!reader->next(c, pos))
         break;
       if (pos >= end_pos) {
-        truncated = true;
+        // If end_pos lands on a delimiter, this word is complete on this page.
+        // Only treat it as truncated when end_pos cuts through the word body.
+        if (c != ' ' && c != '\n') {
+          truncated = true;
+        }
         break;
       }
       if (c == ' ' || c == '\n') {
@@ -523,6 +527,7 @@ static void paginate(int disp_w, int disp_h) {
 #pragma pack(push, 1)
 struct PageCacheHeader {
   uint8_t  magic[4];
+  uint16_t layout_version;
   uint32_t file_size;
   uint16_t disp_w;
   uint16_t disp_h;
@@ -531,6 +536,7 @@ struct PageCacheHeader {
 #pragma pack(pop)
 
 static const uint8_t CACHE_MAGIC[4] = {'E', 'P', 'I', 'C'};
+static const uint16_t CACHE_LAYOUT_VERSION = 2;
 
 static void cache_path_for(const char *book_path, char *out, size_t out_len) {
   strncpy(out, book_path, out_len - 1);
@@ -560,6 +566,7 @@ static bool load_page_cache(int disp_w, int disp_h) {
   }
 
   if (memcmp(hdr.magic, CACHE_MAGIC, 4) != 0 ||
+      hdr.layout_version != CACHE_LAYOUT_VERSION ||
       hdr.file_size != (uint32_t)_file_size ||
       hdr.disp_w != (uint16_t)disp_w ||
       hdr.disp_h != (uint16_t)disp_h ||
@@ -606,6 +613,7 @@ static void save_page_cache(int disp_w, int disp_h) {
 
   PageCacheHeader hdr;
   memcpy(hdr.magic, CACHE_MAGIC, 4);
+  hdr.layout_version = CACHE_LAYOUT_VERSION;
   hdr.file_size  = (uint32_t)_file_size;
   hdr.disp_w     = (uint16_t)disp_w;
   hdr.disp_h     = (uint16_t)disp_h;

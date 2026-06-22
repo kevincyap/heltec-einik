@@ -8,8 +8,22 @@
 
 #define MAX_FILES 20
 
-static void render_menu(DISPLAY_TYPE &display, char files[][64], int count, int sel) {
+static const char UPLOAD_ENTRY[] = "[Upload Books]";
+
+static bool has_txt_extension(const char *name) {
+  size_t len = strlen(name);
+  if (len < 4) return false;
+  const char *ext = name + len - 4;
+  return (ext[0] == '.' &&
+          (ext[1] == 't' || ext[1] == 'T') &&
+          (ext[2] == 'x' || ext[2] == 'X') &&
+          (ext[3] == 't' || ext[3] == 'T'));
+}
+
+static void render_menu(DISPLAY_TYPE &display, char files[][64], int count,
+                        bool has_upload, int sel) {
   display.clearMemory();
+  display.fillRect(0, 0, display.width(), display.height(), WHITE);
 
   // Title bar (small default font)
   display.setFont(NULL);
@@ -23,12 +37,13 @@ static void render_menu(DISPLAY_TYPE &display, char files[][64], int count, int 
   int list_top = 20;
   int max_visible = (display.height() - list_top - MARGIN_BOTTOM) / LINE_HEIGHT;
 
+  int total_items = count + (has_upload ? 1 : 0);
   int scroll = 0;
   if (sel >= max_visible)
     scroll = sel - max_visible + 1;
 
   int y = list_top + MARGIN_TOP - 4;
-  for (int i = scroll; i < count && (i - scroll) < max_visible; i++) {
+  for (int i = scroll; i < total_items && (i - scroll) < max_visible; i++) {
     if (i == sel) {
       display.fillRect(0, y - LINE_HEIGHT + 4, display.width(), LINE_HEIGHT, BLACK);
       display.setTextColor(WHITE);
@@ -36,16 +51,22 @@ static void render_menu(DISPLAY_TYPE &display, char files[][64], int count, int 
       display.setTextColor(BLACK);
     }
 
-    // Display filename without leading slash
-    const char *name = files[i];
-    if (name[0] == '/') name++;
-
     display.setCursor(MARGIN_X + 2, y);
-    display.print(name);
+    if (has_upload && i == total_items - 1) {
+      // Last item is the upload option
+      display.print(UPLOAD_ENTRY);
+    } else {
+      // Display filename without leading slash
+      const char *name = files[i];
+      if (name[0] == '/') name++;
+      display.print(name);
+    }
     y += LINE_HEIGHT;
   }
 
   display.setTextColor(BLACK);
+
+  display.fastmodeOn();
   display.update();
 }
 
@@ -59,13 +80,13 @@ bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len) {
   File f = root.openNextFile();
   while (f && file_count < MAX_FILES) {
     if (!f.isDirectory()) {
-      String name = f.name();
-      if (name.endsWith(".txt")) {
+      const char *name = f.name();
+      if (has_txt_extension(name)) {
         // Normalize path to always have leading /
         if (name[0] != '/')
-          snprintf(files[file_count], 64, "/%s", name.c_str());
+          snprintf(files[file_count], 64, "/%s", name);
         else
-          strncpy(files[file_count], name.c_str(), 64);
+          strncpy(files[file_count], name, 64);
         files[file_count][63] = '\0';
         file_count++;
       }
@@ -74,41 +95,25 @@ bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len) {
   }
   root.close();
 
-  if (file_count == 0) {
-    display.clearMemory();
-    display.setFont(&FreeSans9pt7b);
-    display.setTextColor(BLACK);
-    display.setCursor(MARGIN_X, 40);
-    display.print("No .txt files");
-    display.setCursor(MARGIN_X, 60);
-    display.print("found. Upload via:");
-    display.setFont(NULL);
-    display.setTextSize(1);
-    display.setCursor(MARGIN_X, 80);
-    display.print("pio run -t uploadfs");
-    display.update();
-    return false;
-  }
-
-  // Auto-select if only one file
-  if (file_count == 1) {
-    strncpy(selected, files[0], max_len - 1);
-    selected[max_len - 1] = '\0';
-    return true;
-  }
-
   int sel = 0;
-  render_menu(display, files, file_count, sel);
+  bool has_upload = true;
+  int total_items = file_count + (has_upload ? 1 : 0);
+  render_menu(display, files, file_count, has_upload, sel);
 
   while (true) {
     ButtonEvent evt = button_poll();
     switch (evt) {
       case BTN_SHORT:
-        sel = (sel + 1) % file_count;
-        render_menu(display, files, file_count, sel);
+        sel = (sel + 1) % total_items;
+        render_menu(display, files, file_count, has_upload, sel);
         break;
       case BTN_LONG:
       case BTN_MENU:
+        if (has_upload && sel == total_items - 1) {
+          // Upload mode selected — signal with empty string
+          selected[0] = '\0';
+          return true;
+        }
         strncpy(selected, files[sel], max_len - 1);
         selected[max_len - 1] = '\0';
         return true;

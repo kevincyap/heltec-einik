@@ -10,3 +10,4 @@ enum ButtonEvent {
 void button_init();
 ButtonEvent button_poll();
 unsigned long button_last_activity();
+void button_inject_short_press();

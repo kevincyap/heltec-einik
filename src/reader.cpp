@@ -354,9 +354,11 @@ struct TokenReader {
     tok.width = 0;
 
     while (true) {
+      // Always accumulate width so very long words (beyond the text buffer)
+      // are still measured correctly; only store the character if there's room.
+      tok.width += char_width(c);
       if (tok.len < (int)sizeof(tok.text) - 1) {
         tok.text[tok.len++] = c;
-        tok.width += char_width(c);
       }
 
       if (!reader->next(c, pos))
@@ -441,27 +443,179 @@ static bool push_page_offset(size_t pos) {
   return false;
 }
 
-static bool advance_layout_line(int &x, int &line, int max_lines, size_t next_page_pos) {
+// ── Shared layout engine ──────────────────────────────────────────────────
+// paginate() and reader_render() drive identical word-wrap logic through this
+// single engine, so page boundaries can never diverge between the two passes.
+// The engine walks the token stream and reports placements to a LayoutSink:
+// paginate records page-start byte offsets, render draws the glyphs.
+
+struct LayoutContext {
+  int max_x;      // right text edge (disp_w - MARGIN_X)
+  int col_w;      // usable column width (max_x - MARGIN_X)
+  int max_lines;  // text lines per page
+  int spc_w;      // space advance
+};
+
+struct LayoutSink {
+  virtual ~LayoutSink() {}
+  // Place a null-terminated word (or word fragment) at pixel x on the given
+  // 0-based page line. Return false to abort layout.
+  virtual bool emit_word(const char *text, int len, int x, int line) = 0;
+  // A page boundary: the next page begins at byte offset page_start.
+  // Return false to abort layout.
+  virtual bool emit_page(size_t page_start) = 0;
+};
+
+static LayoutContext make_layout_context(int disp_w, int disp_h) {
+  LayoutContext lc;
+  lc.max_x = disp_w - MARGIN_X;
+  lc.col_w = lc.max_x - MARGIN_X;
+  if (lc.col_w < 1) lc.col_w = 1;
+  lc.max_lines = (disp_h - MARGIN_TOP - MARGIN_BOTTOM) / LINE_HEIGHT;
+  if (lc.max_lines < 1) lc.max_lines = 1;
+  lc.spc_w = get_space_width();
+  return lc;
+}
+
+// Advance to a new line, emitting a page break (next page starts at
+// next_page_pos) when the page fills. Returns false if the sink aborts.
+static bool layout_advance_line(const LayoutContext &lc, LayoutSink &sink,
+                                int &x, int &line, size_t next_page_pos) {
   x = MARGIN_X;
   line++;
-  if (line >= max_lines) {
-    if (!push_page_offset(next_page_pos))
+  if (line >= lc.max_lines) {
+    if (!sink.emit_page(next_page_pos))
       return false;
     line = 0;
   }
   return true;
 }
 
-static bool commit_layout_word(int word_width, size_t word_start,
-                               int &x, int &line,
-                               int max_x, int max_lines) {
-  if (x + word_width > max_x && x > MARGIN_X) {
-    if (!advance_layout_line(x, line, max_lines, word_start))
+// Number of column-width fragments a word longer than the column splits into.
+static int count_word_fragments(const LayoutContext &lc, const TextToken &tok) {
+  int frags = 0;
+  int i = 0;
+  while (i < tok.len) {
+    int frag_w = 0;
+    int blen = 0;
+    while (i < tok.len) {
+      int cw = char_width(tok.text[i]);
+      if (blen > 0 && frag_w + cw > lc.col_w)
+        break;
+      blen++;
+      frag_w += cw;
+      i++;
+    }
+    frags++;
+    if (blen == 0) i++; // guard: never stall on a zero-width character
+  }
+  return frags < 1 ? 1 : frags;
+}
+
+static bool layout_word(const LayoutContext &lc, LayoutSink &sink,
+                        const TextToken &tok, int &x, int &line) {
+  // Common case: the word fits inside one column width.
+  if (tok.width <= lc.col_w) {
+    if (x + tok.width > lc.max_x && x > MARGIN_X) {
+      if (!layout_advance_line(lc, sink, x, line, tok.pos))
+        return false;
+    }
+    if (!sink.emit_word(tok.text, tok.len, x, line))
+      return false;
+    x += tok.width;
+    return true;
+  }
+
+  // Long word (wider than the column). Start it on a fresh line so it does not
+  // overlap preceding text, then hard-break it across lines.
+  if (x > MARGIN_X) {
+    if (!layout_advance_line(lc, sink, x, line, tok.pos))
       return false;
   }
-  x += word_width;
+
+  // Keep the whole word on one page: page offsets stay on token boundaries,
+  // which avoids splitting a multi-byte source character. If the word does not
+  // fit in the lines left on this page, move it to the next page first — unless
+  // it is already at the top of a page, in which case it just overflows.
+  int frags = count_word_fragments(lc, tok);
+  if (line > 0 && line + frags > lc.max_lines) {
+    if (!sink.emit_page(tok.pos))
+      return false;
+    line = 0;
+    x = MARGIN_X;
+  }
+
+  char buf[sizeof(tok.text)];
+  int i = 0;
+  while (i < tok.len) {
+    int frag_w = 0;
+    int blen = 0;
+    while (i < tok.len) {
+      int cw = char_width(tok.text[i]);
+      if (blen > 0 && frag_w + cw > lc.col_w)
+        break;
+      buf[blen++] = tok.text[i];
+      frag_w += cw;
+      i++;
+    }
+    buf[blen] = '\0';
+    if (!sink.emit_word(buf, blen, x, line))
+      return false;
+    x = MARGIN_X + frag_w;
+    if (i < tok.len) {
+      // More fragments follow: drop to the next line without a page break so
+      // the word is never split across a page boundary.
+      x = MARGIN_X;
+      line++;
+    }
+  }
   return true;
 }
+
+static void layout_run(File &f, size_t start, size_t end,
+                       int disp_w, int disp_h, LayoutSink &sink) {
+  LayoutContext lc = make_layout_context(disp_w, disp_h);
+
+  ReflowFileReader reader;
+  if (!reader.begin(f, start))
+    return;
+
+  TokenReader tokens;
+  tokens.begin(reader);
+
+  int x = MARGIN_X;
+  int line = 0;
+  TextToken tok;
+  while (tokens.next(tok, end)) {
+    if (tok.type == TOKEN_NEWLINE) {
+      // Page start lands on the newline token's reported position (the first
+      // char of the next paragraph), not one byte past it.
+      if (!layout_advance_line(lc, sink, x, line, tok.pos))
+        return;
+    } else if (tok.type == TOKEN_SPACE) {
+      if (x != MARGIN_X)
+        x += lc.spc_w;
+    } else {
+      if (!layout_word(lc, sink, tok, x, line))
+        return;
+    }
+  }
+}
+
+// ── Pagination ────────────────────────────────────────────────────────────
+
+struct PaginateSink : LayoutSink {
+  bool ok;
+  PaginateSink() : ok(true) {}
+  bool emit_word(const char *, int, int, int) override { return true; }
+  bool emit_page(size_t page_start) override {
+    if (!push_page_offset(page_start)) {
+      ok = false;
+      return false;
+    }
+    return true;
+  }
+};
 
 static void paginate(int disp_w, int disp_h) {
   File f = LittleFS.open(_filename, "r");
@@ -469,11 +623,6 @@ static void paginate(int disp_w, int disp_h) {
     _num_pages = 0;
     return;
   }
-
-  int max_x = disp_w - MARGIN_X;
-  int max_lines = (disp_h - MARGIN_TOP - MARGIN_BOTTOM) / LINE_HEIGHT;
-  if (max_lines < 1) max_lines = 1;
-  int spc_w = get_space_width();
 
   int initial_pages = (int)(_file_size / 700) + 8;
   if (initial_pages < 32) initial_pages = 32;
@@ -483,41 +632,15 @@ static void paginate(int disp_w, int disp_h) {
   _page_capacity = 0;
 
   if (!ensure_page_capacity(initial_pages)) {
+    f.close();
     _num_pages = 0;
     return;
   }
   _page_offsets[0] = 0;
   _num_pages = 1;
 
-  ReflowFileReader reader;
-  if (!reader.begin(f, 0)) {
-    f.close();
-    _num_pages = 0;
-    return;
-  }
-
-  TokenReader tokens;
-  tokens.begin(reader);
-
-  int x = MARGIN_X;
-  int line = 0;
-  TextToken tok;
-  while (tokens.next(tok, (size_t)-1)) {
-    if (tok.type == TOKEN_NEWLINE) {
-      if (!advance_layout_line(x, line, max_lines, tok.pos + 1))
-        break;
-      continue;
-    }
-
-    if (tok.type == TOKEN_SPACE) {
-      if (x != MARGIN_X)
-        x += spc_w;
-      continue;
-    }
-
-    if (!commit_layout_word(tok.width, tok.pos, x, line, max_x, max_lines))
-      break;
-  }
+  PaginateSink sink;
+  layout_run(f, 0, (size_t)-1, disp_w, disp_h, sink);
 
   f.close();
 }
@@ -536,7 +659,7 @@ struct PageCacheHeader {
 #pragma pack(pop)
 
 static const uint8_t CACHE_MAGIC[4] = {'E', 'P', 'I', 'C'};
-static const uint16_t CACHE_LAYOUT_VERSION = 2;
+static const uint16_t CACHE_LAYOUT_VERSION = 3;
 
 static void cache_path_for(const char *book_path, char *out, size_t out_len) {
   strncpy(out, book_path, out_len - 1);
@@ -701,6 +824,24 @@ bool reader_open(DISPLAY_TYPE &display, const char *filename, int start_page) {
   return true;
 }
 
+struct RenderSink : LayoutSink {
+  DISPLAY_TYPE *display;
+  int max_y;
+  int word_count;
+  RenderSink(DISPLAY_TYPE &d, int max_y_)
+      : display(&d), max_y(max_y_), word_count(0) {}
+  bool emit_word(const char *text, int len, int x, int line) override {
+    (void)len;
+    if (++word_count > 4000) return false; // safety against a corrupt offset map
+    int y = MARGIN_TOP + line * LINE_HEIGHT;
+    if (y > max_y) return true; // beyond the page (pathological long word) — skip
+    display->setCursor(x, y);
+    display->print(text);
+    return true;
+  }
+  bool emit_page(size_t) override { return false; } // render never crosses a page
+};
+
 void reader_render(DISPLAY_TYPE &display) {
   if (_filename[0] == '\0' || _num_pages == 0) return;
 
@@ -713,9 +854,6 @@ void reader_render(DISPLAY_TYPE &display) {
   File f = LittleFS.open(_filename, "r");
   if (!f) return;
 
-  int spc_w = get_space_width();
-  int max_x = display.width() - MARGIN_X;
-
   size_t start = _page_offsets[_current_page];
   size_t end = (_current_page + 1 < _num_pages)
                    ? (size_t)_page_offsets[_current_page + 1]
@@ -726,55 +864,8 @@ void reader_render(DISPLAY_TYPE &display) {
   if (end <= start || end > _file_size)
     end = _file_size;
 
-  ReflowFileReader reader;
-  if (!reader.begin(f, start)) {
-    f.close();
-    return;
-  }
-
-  TokenReader tokens;
-  tokens.begin(reader);
-
-  int x = MARGIN_X;
-  int y = MARGIN_TOP;
-  int max_y = display.height() - MARGIN_BOTTOM;
-
-  TextToken tok;
-  int token_count = 0;
-  while (tokens.next(tok, end)) {
-    token_count++;
-    if (token_count > 4000) {
-      break;
-    }
-
-    if (tok.type == TOKEN_NEWLINE) {
-      x = MARGIN_X;
-      y += LINE_HEIGHT;
-      if (y > max_y)
-        break;
-      continue;
-    }
-
-    if (tok.type == TOKEN_SPACE) {
-      if (x != MARGIN_X)
-        x += spc_w;
-      continue;
-    }
-
-    if (x + tok.width > max_x && x > MARGIN_X) {
-      x = MARGIN_X;
-      y += LINE_HEIGHT;
-      if (y > max_y)
-        break;
-    }
-
-    if (y > max_y)
-      break;
-
-    display.setCursor(x, y);
-    display.print(tok.text);
-    x += tok.width;
-  }
+  RenderSink sink(display, display.height() - MARGIN_BOTTOM);
+  layout_run(f, start, end, display.width(), display.height(), sink);
 
   f.close();
 

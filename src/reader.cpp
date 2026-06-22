@@ -318,6 +318,7 @@ struct TokenReader {
   bool next(TextToken &tok, size_t end_pos) {
     char c;
     size_t pos;
+    bool truncated = false;
 
     if (has_pending) {
       c = pending_char;
@@ -360,8 +361,10 @@ struct TokenReader {
 
       if (!reader->next(c, pos))
         break;
-      if (pos >= end_pos)
+      if (pos >= end_pos) {
+        truncated = true;
         break;
+      }
       if (c == ' ' || c == '\n') {
         has_pending = true;
         pending_char = c;
@@ -369,6 +372,9 @@ struct TokenReader {
         break;
       }
     }
+
+    if (truncated)
+      return false;
 
     tok.text[tok.len] = '\0';
     return true;

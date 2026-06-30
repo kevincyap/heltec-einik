@@ -17,7 +17,7 @@ static AsyncWebServer *_server = nullptr;
 static DNSServer *_dns = nullptr;
 static bool _active = false;
 static bool _using_ap_mode = true;
-static DISPLAY_TYPE *_display_ptr = nullptr;
+static EinkDisplay *_display_ptr = nullptr;
 static IPAddress _host_ip(0, 0, 0, 0);
 static char _active_ssid[33] = {};
 
@@ -160,7 +160,7 @@ load();loadState();
 
 static void draw_upload_screen(const char *status_line = nullptr) {
   if (!_display_ptr) return;
-  DISPLAY_TYPE &display = *_display_ptr;
+  EinkDisplay &display = *_display_ptr;
 
   display.clearMemory();
   display.setFont(&FreeSans9pt7b);
@@ -369,7 +369,7 @@ static void start_wifi_ap() {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-void wifi_upload_start(DISPLAY_TYPE &display) {
+void wifi_upload_start(EinkDisplay &display) {
   if (_active) return;
   _display_ptr = &display;
 

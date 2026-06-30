@@ -1,15 +1,15 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <esp_sleep.h>
-#include <heltec-eink-modules.h>
 #include "config.h"
+#include "display.h"
 #include "button.h"
 #include "reader.h"
 #include "state.h"
 #include "menu.h"
 #include "wifi_upload.h"
 
-DISPLAY_TYPE display;
+EinkDisplay display;
 static bool _sleep_after_turn_pending = false;
 static unsigned long _sleep_after_turn_started_ms = 0;
 RTC_DATA_ATTR static bool _wake_turn_page_pending = false;
@@ -69,20 +69,9 @@ static void enter_sleep(SleepReason reason = SLEEP_REASON_GENERIC) {
 
   Serial.println("Entering deep sleep...");
   Serial.flush();
-  esp_sleep_enable_ext0_wakeup((gpio_num_t)USER_BUTTON_PIN, 0);
+  display.prepareSleep();
+  input_enable_deep_sleep_wake();
   esp_deep_sleep_start();
-}
-
-static unsigned long wait_for_wake_button_release() {
-  if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
-    return 0;
-
-  unsigned long start = millis();
-  while (digitalRead(USER_BUTTON_PIN) == LOW && (millis() - start) < WAKE_BUTTON_RELEASE_TIMEOUT_MS) {
-    delay(10);
-  }
-
-  return millis() - start;
 }
 
 static void enter_upload_mode() {
@@ -150,7 +139,7 @@ void setup() {
   Serial.println("E-Ink Reader starting...");
 
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
-  bool woke_from_button = (wake_cause == ESP_SLEEP_WAKEUP_EXT0);
+  bool woke_from_button = input_woke_from_button(wake_cause);
   Serial.printf("Wake cause=%d, rtc wake_flag(before)=%d\n",
                 (int)wake_cause,
                 _wake_turn_page_pending ? 1 : 0);
@@ -162,9 +151,9 @@ void setup() {
                 should_turn_page_after_wake ? 1 : 0,
                 _wake_turn_page_pending ? 1 : 0);
 
-  display.setRotation(USB_LEFT);
-  pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
-  unsigned long wake_hold_ms = wait_for_wake_button_release();
+  display.begin();
+  display.setRotation(DISPLAY_READ_ROTATION);
+  unsigned long wake_hold_ms = input_wait_wake_release();
   bool wake_prev_requested = (should_turn_page_after_wake && wake_hold_ms >= LONG_PRESS_MS);
   if (should_turn_page_after_wake) {
     Serial.printf("Wake hold=%lu ms, direction=%s\n",

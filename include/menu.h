@@ -1,7 +1,7 @@
 #pragma once
 
 #include "config.h"
-#include <heltec-eink-modules.h>
+#include "display.h"
 
 #define MENU_RESULT_UPLOAD -2
 
@@ -9,4 +9,4 @@
 // Returns true and fills `selected` with the filename if a book was chosen.
 // If user selects "Upload Books", returns true with selected set to empty string.
 // Caller should check: if selected[0] == '\0', enter upload mode.
-bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len);
+bool menu_show(EinkDisplay &display, char *selected, size_t max_len);

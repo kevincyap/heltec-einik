@@ -1,11 +1,11 @@
 #pragma once
 
 #include "config.h"
-#include <heltec-eink-modules.h>
+#include "display.h"
 
 // Start WiFi AP and web server for file uploads.
 // Displays upload mode screen on the e-ink display.
-void wifi_upload_start(DISPLAY_TYPE &display);
+void wifi_upload_start(EinkDisplay &display);
 
 // Must be called periodically while upload mode is active (processes DNS).
 void wifi_upload_tick();

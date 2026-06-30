@@ -788,7 +788,7 @@ bool reader_open_fast(const char *filename, uint32_t file_size, int num_pages,
   return true;
 }
 
-bool reader_open(DISPLAY_TYPE &display, const char *filename, int start_page) {
+bool reader_open(EinkDisplay &display, const char *filename, int start_page) {
   reader_close();
 
   File f = LittleFS.open(filename, "r");
@@ -825,10 +825,10 @@ bool reader_open(DISPLAY_TYPE &display, const char *filename, int start_page) {
 }
 
 struct RenderSink : LayoutSink {
-  DISPLAY_TYPE *display;
+  EinkDisplay *display;
   int max_y;
   int word_count;
-  RenderSink(DISPLAY_TYPE &d, int max_y_)
+  RenderSink(EinkDisplay &d, int max_y_)
       : display(&d), max_y(max_y_), word_count(0) {}
   bool emit_word(const char *text, int len, int x, int line) override {
     (void)len;
@@ -842,7 +842,7 @@ struct RenderSink : LayoutSink {
   bool emit_page(size_t) override { return false; } // render never crosses a page
 };
 
-void reader_render(DISPLAY_TYPE &display) {
+void reader_render(EinkDisplay &display) {
   if (_filename[0] == '\0' || _num_pages == 0) return;
 
   display.clearMemory();

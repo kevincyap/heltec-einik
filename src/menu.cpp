@@ -20,7 +20,7 @@ static bool has_txt_extension(const char *name) {
           (ext[3] == 't' || ext[3] == 'T'));
 }
 
-static void render_menu(DISPLAY_TYPE &display, char files[][64], int count,
+static void render_menu(EinkDisplay &display, char files[][64], int count,
                         bool has_upload, int sel) {
   display.clearMemory();
   display.fillRect(0, 0, display.width(), display.height(), WHITE);
@@ -70,7 +70,7 @@ static void render_menu(DISPLAY_TYPE &display, char files[][64], int count,
   display.update();
 }
 
-bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len) {
+bool menu_show(EinkDisplay &display, char *selected, size_t max_len) {
   char files[MAX_FILES][64];
   int file_count = 0;
 
@@ -120,7 +120,8 @@ bool menu_show(DISPLAY_TYPE &display, char *selected, size_t max_len) {
       default:
         // Sleep if idle too long on menu screen
         if (millis() - button_last_activity() > SLEEP_TIMEOUT_MS) {
-          esp_sleep_enable_ext0_wakeup((gpio_num_t)USER_BUTTON_PIN, 0);
+          display.prepareSleep();
+          input_enable_deep_sleep_wake();
           esp_deep_sleep_start();
         }
         delay(10);

@@ -119,7 +119,7 @@ bool menu_show(EinkDisplay &display, char *selected, size_t max_len) {
         return true;
       default:
         // Sleep if idle too long on menu screen
-        if (millis() - button_last_activity() > SLEEP_TIMEOUT_MS) {
+        if (millis() - button_last_activity() >= SLEEP_TIMEOUT_MS) {
           display.prepareSleep();
           input_enable_deep_sleep_wake();
           esp_deep_sleep_start();

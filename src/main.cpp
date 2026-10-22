@@ -11,8 +11,13 @@
 
 EinkDisplay display;
 static bool _sleep_after_turn_pending = false;
-static unsigned long _sleep_after_turn_started_ms = 0;
 RTC_DATA_ATTR static bool _wake_turn_page_pending = false;
+
+static void mark_page_turned() {
+#if SLEEP_AFTER_PAGE_TURN
+  _sleep_after_turn_pending = true;
+#endif
+}
 
 // Fast-wake data: persisted across deep sleep to avoid state_load + load_page_cache
 RTC_DATA_ATTR static char     _rtc_filename[64];
@@ -186,6 +191,8 @@ void setup() {
       // Reload full offset array so subsequent page turns work correctly.
       // Fast wake only populated 4 nearby offsets; all others are zeroed.
       reader_load_full_cache(display.width(), display.height());
+      if (turned)
+        mark_page_turned();
       Serial.println("Fast wake render done");
       return;
     }
@@ -206,6 +213,7 @@ void setup() {
                         wake_prev_requested ? "prev" : "next",
                         reader_current_page());
           reader_render(display);
+          mark_page_turned();
         } else {
           Serial.println("Wake turn requested at boundary; staying on current page");
         }
@@ -233,20 +241,14 @@ void loop() {
         if (reader_next_page()) {
           reader_render(display);
           state_save(reader_filename(), reader_current_page());
-#if SLEEP_AFTER_PAGE_TURN
-          _sleep_after_turn_pending = true;
-          _sleep_after_turn_started_ms = millis();
-#endif
+          mark_page_turned();
         }
         break;
       case BTN_LONG:
         if (reader_prev_page()) {
           reader_render(display);
           state_save(reader_filename(), reader_current_page());
-#if SLEEP_AFTER_PAGE_TURN
-          _sleep_after_turn_pending = true;
-          _sleep_after_turn_started_ms = millis();
-#endif
+          mark_page_turned();
         }
         break;
       case BTN_MENU:
@@ -257,17 +259,13 @@ void loop() {
         break;
     }
 
-#if SLEEP_AFTER_PAGE_TURN
-    if (_sleep_after_turn_pending && (millis() - _sleep_after_turn_started_ms >= SLEEP_AFTER_PAGE_TURN_DELAY_MS)) {
-      enter_sleep(SLEEP_REASON_AFTER_TURN);
-    }
-#endif
   }
 
-  // Deep sleep on inactivity
-  if (millis() - button_last_activity() > SLEEP_TIMEOUT_MS) {
+  // Every button event, including a book-boundary press, resets inactivity.
+  if (millis() - button_last_activity() >= SLEEP_TIMEOUT_MS) {
     if (reader_is_open())
-      enter_sleep(SLEEP_REASON_TIMEOUT_READING);
+      enter_sleep(_sleep_after_turn_pending ? SLEEP_REASON_AFTER_TURN
+                                           : SLEEP_REASON_TIMEOUT_READING);
     else
       enter_sleep(SLEEP_REASON_GENERIC);
   }

@@ -23,17 +23,63 @@
 #if defined(BOARD_VISION_MASTER_E213)
 
   #include <heltec-eink-modules.h>
+  #include <driver/gpio.h>
 
   // Rotation used while reading (heltec rotation enum)
   #define DISPLAY_READ_ROTATION USB_LEFT
 
-  // The heltec panel class already exposes clearMemory/fillRect/fastmodeOn/
-  // fastmodeOff/update and inits itself in its constructor; we only add the
-  // uniform lifecycle hooks used by main.cpp.
   class EinkDisplay : public DISPLAY_TYPE {
    public:
-    void begin() {}            // heltec initialises in the constructor
-    void prepareSleep() {}     // nothing extra required before deep sleep
+    void begin() {
+      gpio_deep_sleep_hold_dis();
+      gpio_hold_dis((gpio_num_t)PIN_PCB_VEXT);
+    }
+
+    void prepareSleep() {
+      if (begun) {
+        waitUntilIdle();
+        display_spi->end();
+      }
+      // Do not back-power the unpowered panel through its signal pins.
+      const uint8_t pins[] = {
+        PIN_DISPLAY_DC, PIN_DISPLAY_CS, PIN_DISPLAY_BUSY,
+        DEFAULT_SDI, DEFAULT_CLK, PIN_DISPLAY_RST
+      };
+      for (uint8_t pin : pins)
+        pinMode(pin, INPUT);
+      Platform::VExtOff();
+      gpio_hold_en((gpio_num_t)PIN_PCB_VEXT);
+      gpio_deep_sleep_hold_en();
+    }
+
+   protected:
+    // Same LCMEN2R13EFC1 old/new RAM sequence as the backend, but one
+    // transaction per buffer instead of one transaction per byte.
+    void sendImageData() override {
+      if (fastmode_state == OFF) {
+        writeFrame(0x10);
+        writeFrame(0x13);
+      } else {
+        writeFrame(fastmode_secondpass ? 0x10 : 0x13);
+      }
+      waitUntilIdle();
+    }
+
+   private:
+    void waitUntilIdle() {
+      while (digitalRead(PIN_DISPLAY_BUSY) == LOW)
+        delay(1);
+    }
+
+    void writeFrame(uint8_t command) {
+      sendCommand(command);
+      display_spi->beginTransaction(spi_settings);
+      digitalWrite(PIN_DISPLAY_DC, HIGH);
+      digitalWrite(PIN_DISPLAY_CS, LOW);
+      display_spi->writeBytes(page_black, page_bytecount);
+      digitalWrite(PIN_DISPLAY_CS, HIGH);
+      display_spi->endTransaction();
+    }
   };
 
 // -----------------------------------------------------------------------------

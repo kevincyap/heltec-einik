@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include "config.h"
 #include "reader.h"
+#include "battery.h"
 #include <Fonts/FreeSans9pt7b.h>
 
 static const GFXfont *_font = &FreeSans9pt7b;
@@ -13,74 +14,6 @@ static int *_page_offsets = nullptr;
 static int _page_capacity = 0;
 static int _num_pages = 0;
 static int _current_page = 0;
-
-static int read_battery_percent() {
-#if BATTERY_INDICATOR_ENABLED
-  #ifdef ARDUINO_ARCH_ESP32
-    static int cached_percent = -1;
-    static bool has_valid_battery = false;
-    static unsigned long last_sample_ms = 0;
-    static unsigned long retry_interval_ms = 5000;
-    unsigned long now = millis();
-
-    if (now < 3000) {
-      return has_valid_battery ? cached_percent : -1;
-    }
-
-    if ((now - last_sample_ms) < retry_interval_ms) {
-      return has_valid_battery ? cached_percent : -1;
-    }
-
-    // GPIO 46 drives the base of an S9013 NPN transistor.
-    // HIGH saturates the transistor (collector conducts) completing the
-    // voltage divider to GND so GPIO 7 can read the battery voltage.
-    // LOW cuts the transistor off, disconnecting the divider to save power.
-    pinMode(BATTERY_ADC_CTRL_PIN, OUTPUT);
-    digitalWrite(BATTERY_ADC_CTRL_PIN, HIGH);
-    delay(5); // allow divider to settle
-    analogSetPinAttenuation(BATTERY_ADC_PIN, ADC_11db);
-    uint32_t adc_mv = (uint32_t)analogReadMilliVolts(BATTERY_ADC_PIN);
-    digitalWrite(BATTERY_ADC_CTRL_PIN, LOW); // cut transistor, stop divider current
-    Serial.printf("[BAT] GPIO%d raw=%u mV\n", BATTERY_ADC_PIN, adc_mv);
-    if (adc_mv == 0) {
-      Serial.println("[BAT] FAIL: raw ADC read returned 0");
-      has_valid_battery = false;
-      retry_interval_ms = 10000;
-      last_sample_ms = now;
-      return -1;
-    }
-
-    float battery_mv = adc_mv * BATTERY_DIVIDER_RATIO;
-    bool plausible = (battery_mv >= (BATTERY_EMPTY_MV - 200) && battery_mv <= (BATTERY_FULL_MV + 300));
-    Serial.printf("[BAT] battery_mv=%.1f (ratio=%.2f) plausible=%d\n",
-                  battery_mv, BATTERY_DIVIDER_RATIO, plausible ? 1 : 0);
-
-    if (!plausible) {
-      Serial.printf("[BAT] FAIL: out of range (expected %.0f-%.0f mV)\n",
-                    (float)(BATTERY_EMPTY_MV - 200), (float)(BATTERY_FULL_MV + 300));
-      has_valid_battery = false;
-      retry_interval_ms = 10000;
-      last_sample_ms = now;
-      return -1;
-    }
-
-    float pct = ((battery_mv - BATTERY_EMPTY_MV) * 100.0f) / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
-    if (pct < 0.0f) pct = 0.0f;
-    if (pct > 100.0f) pct = 100.0f;
-
-    cached_percent = (int)(pct + 0.5f);
-    has_valid_battery = true;
-    retry_interval_ms = 30000;
-    last_sample_ms = now;
-    Serial.printf("[BAT] OK: %d%%\n", cached_percent);
-    return cached_percent;
-  #else
-    return -1;
-  #endif
- #else
-  return -1;
- #endif
-}
 
 struct BufferedFileReader {
   File *file;
@@ -881,7 +814,7 @@ void reader_render(EinkDisplay &display) {
   display.print(indicator);
 
 #if BATTERY_INDICATOR_ENABLED
-  int battery_pct = read_battery_percent();
+  int battery_pct = battery_percent();
   char battery_label[20];
   if (battery_pct >= 0)
     snprintf(battery_label, sizeof(battery_label), "Bat %d%%", battery_pct);

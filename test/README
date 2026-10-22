@@ -9,3 +9,29 @@ in the development cycle.
 
 More information about PlatformIO Unit Testing:
 - https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+
+Host power/wake regressions (Windows, Visual C++ build tools required):
+
+  pwsh -File test\host\run.ps1
+
+These compile the real main.cpp and Heltec display adapter against hardware
+mocks. Cases cover fast and fallback wake in both directions, book boundaries,
+cold boot, awake navigation, sleep deadlines, framebuffer bytes and transaction
+counts, and peripheral power-off/hold release. Executables are built in a
+temporary directory and removed afterwards.
+Battery tests cover the estimated Li-ion curve, sampling immediately on boot,
+discarding the first conversion, trimmed-mean outlier rejection, sample caching,
+invalid voltage handling and retry recovery.
+
+Firmware compile checks:
+
+  pio run -e vision-master-e213 -e crowpanel-e213
+
+Hardware checks after flashing the Heltec target:
+- Check cold boot, menu/upload, and next/previous navigation.
+- Confirm reading and menu sleep after one minute without button activity.
+- Press next/previous just before the deadline, including at book boundaries,
+  and confirm each press grants another full minute awake.
+- Check several consecutive sleep/wake cycles for ghosting or missing text.
+- Compare battery-supply sleep current and button-to-page latency with the
+  previous firmware. Host tests cannot measure these or validate panel timing.

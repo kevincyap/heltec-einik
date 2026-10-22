@@ -28,7 +28,7 @@
   #define LONG_PRESS_MS     400
   #define MENU_PRESS_MS     3000
 
-  // Sleep immediately after a page turn and wake to advance (fast partial wake).
+  // After reading inactivity, let the wake button advance the page.
   #define SLEEP_AFTER_PAGE_TURN 1
 
   // -- Battery indicator (reader footer) --
@@ -39,7 +39,7 @@
   #define BATTERY_INDICATOR_ENABLED  1
   #define BATTERY_ADC_PIN            7      // GPIO 7 — VBAT sense
   #define BATTERY_ADC_CTRL_PIN       46     // GPIO 46 — ADC_CTRL, drive HIGH to enable
-  #define BATTERY_DIVIDER_RATIO      4.9f   // Onboard voltage divider scaling
+  #define BATTERY_DIVIDER_RATIO      4.9f   // Nominal scaling; unverified without voltage calibration
   #define BATTERY_EMPTY_MV           3300
   #define BATTERY_FULL_MV            4200
 
@@ -91,9 +91,8 @@
 #define DEBOUNCE_MS       50
 
 // -- Power management --
-#define SLEEP_TIMEOUT_MS  (5UL * 60UL * 1000UL)
+#define SLEEP_TIMEOUT_MS  (60UL * 1000UL)
 #define MAIN_LOOP_IDLE_DELAY_MS 25
-#define SLEEP_AFTER_PAGE_TURN_DELAY_MS 5000
 #define WAKE_BUTTON_RELEASE_TIMEOUT_MS 3000
 
 // Auto-exit upload mode to avoid leaving WiFi active accidentally

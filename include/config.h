@@ -22,9 +22,12 @@
   // Use EInkDisplay_VisionMasterE213V1_1 for V1.1 boards
   #define DISPLAY_TYPE EInkDisplay_VisionMasterE213
 
-  // -- Input: single USER button on GPIO 21 --
+  // -- Input: recessed USER modifier/wake + three active-low face buttons --
   #define INPUT_SINGLE_BUTTON 1
   #define USER_BUTTON_PIN   21
+  #define FACE_TOP_PIN      42
+  #define FACE_MIDDLE_PIN   41
+  #define FACE_BOTTOM_PIN   40
   #define LONG_PRESS_MS     400
   #define MENU_PRESS_MS     3000
 
@@ -106,7 +109,7 @@
 // Set to 0 to disable full-refresh flashes during reading.
 // Set to a positive value (e.g. 20-50) if you want occasional full cleanup.
 #define FULL_REFRESH_INTERVAL 25
-#define PARTIAL_CLEANUP_EXTRA_UPDATES 1
+#define PARTIAL_CLEANUP_EXTRA_UPDATES 0
 
 // -- WiFi secrets/config --
 // Keep personal WiFi credentials in `wifi_secrets.local.h` (gitignored).

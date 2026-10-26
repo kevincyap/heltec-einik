@@ -6,7 +6,10 @@ enum ButtonEvent {
   BTN_NONE,
   BTN_SHORT,
   BTN_LONG,
-  BTN_MENU
+  BTN_MENU,
+  BTN_UP,
+  BTN_DOWN,
+  BTN_SELECT
 };
 
 void button_init();
@@ -19,5 +22,5 @@ void button_inject_short_press();
 void input_enable_deep_sleep_wake();
 // True if the given wake cause corresponds to a button/key press for this board.
 bool input_woke_from_button(esp_sleep_wakeup_cause_t cause);
-// Block until the wake key is released (or timeout). Returns hold duration in ms.
+// CrowPanel waits for release; Heltec leaves USER available as a held modifier.
 unsigned long input_wait_wake_release();

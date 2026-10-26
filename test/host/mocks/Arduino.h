@@ -8,8 +8,20 @@
 #define HIGH 1
 #define LOW 0
 #define INPUT 1
+#define INPUT_PULLUP 3
 #define OUTPUT 2
 #define ADC_0db 0
+#define IRAM_ATTR
+#define CHANGE 1
+
+typedef void (*InterruptHandler)();
+extern InterruptHandler interrupt_handlers[49];
+inline int digitalPinToInterrupt(int pin) { return pin; }
+inline void attachInterrupt(int pin, InterruptHandler handler, int) {
+  interrupt_handlers[pin] = handler;
+}
+inline void noInterrupts() {}
+inline void interrupts() {}
 
 void analogSetPinAttenuation(int pin, int attenuation);
 uint32_t analogReadMilliVolts(int pin);
@@ -24,9 +36,16 @@ inline int digitalRead(int pin) { return pin_levels[pin]; }
 inline void digitalWrite(int pin, int value) { pin_levels[pin] = value; }
 
 struct SerialMock {
+  uint32_t tx_timeout_ms = 100;
+  bool backpressured = false;
+  void setTxTimeoutMs(uint32_t timeout) { tx_timeout_ms = timeout; }
   void begin(int) {}
-  void println(const char *) {}
-  template<typename... Args> void printf(const char *, Args...) {}
+  void println(const char *) {
+    if (backpressured) now_ms += 20 * tx_timeout_ms;
+  }
+  template<typename... Args> void printf(const char *, Args...) {
+    if (backpressured) now_ms += 20 * tx_timeout_ms;
+  }
   void flush() {}
 };
 extern SerialMock Serial;

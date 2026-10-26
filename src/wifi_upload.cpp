@@ -258,6 +258,7 @@ static void handle_file_delete(AsyncWebServerRequest *request) {
   if (LittleFS.exists(name)) {
     LittleFS.remove(name);
     reader_delete_book_cache(name.c_str());
+    state_delete_book_page(name.c_str());
     request->send(200, "text/plain", "Deleted");
   } else {
     request->send(404, "text/plain", "File not found");
@@ -324,6 +325,7 @@ static void handle_state_set(AsyncWebServerRequest *request) {
     return;
   }
   state_save(filename.c_str(), page);
+  state_save_book_page(filename.c_str(), page);
   request->send(200, "text/plain", "OK");
 }
 

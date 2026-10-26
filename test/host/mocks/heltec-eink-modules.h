@@ -11,6 +11,7 @@
 #define DEFAULT_CLK 4
 
 enum Color { BLACK, WHITE };
+struct GFXfont {};
 enum Fastmode { OFF, ON };
 struct SPISettings {};
 struct SPIClass {
@@ -38,7 +39,7 @@ class LCMEN2R13EFC1 {
   void fastmodeOff() { fastmode_state = OFF; }
   void clearMemory() {}
   void fillRect(int, int, int, int, Color) {}
-  void setFont(void *) {}
+  void setFont(const void *) {}
   void setTextSize(int) {}
   void setTextColor(Color) {}
   void setCursor(int, int) {}

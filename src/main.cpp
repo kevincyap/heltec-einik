@@ -59,13 +59,18 @@ static void render_status_screen(const char *line1, const char *line2 = nullptr)
 
 static void enter_sleep(SleepReason reason = SLEEP_REASON_GENERIC) {
   _wake_turn_page_pending = (reason == SLEEP_REASON_AFTER_TURN);
+#if INPUT_SINGLE_BUTTON
+  _wake_turn_page_pending = _wake_turn_page_pending ||
+                           reason == SLEEP_REASON_TIMEOUT_READING;
+#endif
   Serial.printf("Sleep reason=%s, set wake_flag=%d\n",
                 sleep_reason_name(reason),
                 _wake_turn_page_pending ? 1 : 0);
 
   if (reader_is_open()) {
     state_save(reader_filename(), reader_current_page());
-    if (reason == SLEEP_REASON_AFTER_TURN) {
+    state_save_book_page(reader_filename(), reader_current_page());
+    if (_wake_turn_page_pending) {
       strncpy(_rtc_filename, reader_filename(), sizeof(_rtc_filename) - 1);
       _rtc_filename[sizeof(_rtc_filename) - 1] = '\0';
       reader_get_page_window(&_rtc_page, &_rtc_num_pages, &_rtc_file_size, _rtc_page_window);
@@ -95,7 +100,7 @@ static void enter_upload_mode() {
     }
 
     ButtonEvent evt = button_poll();
-    if (evt == BTN_SHORT || evt == BTN_LONG || evt == BTN_MENU) {
+    if (evt != BTN_NONE) {
       wifi_upload_stop();
       break;
     }
@@ -116,14 +121,11 @@ static bool open_menu() {
     // returns to the same book from the menu.
     if (reader_is_open()) {
       state_save(reader_filename(), reader_current_page());
+      state_save_book_page(reader_filename(), reader_current_page());
     }
 
-    // Resume from saved position if the selected book matches the last saved state.
-    ReadingState saved = state_load();
-    int start_page = 0;
-    if (saved.valid && strncmp(saved.filename, selected, sizeof(saved.filename)) == 0) {
-      start_page = saved.page;
-    }
+    // Resume from saved per-book position.
+    int start_page = state_load_book_page(selected);
 
     reader_close();
     if (reader_open(display, selected, start_page)) {
@@ -141,6 +143,9 @@ static bool open_menu() {
 
 void setup() {
   Serial.begin(115200);
+#if ARDUINO_USB_CDC_ON_BOOT
+  Serial.setTxTimeoutMs(0);
+#endif
   Serial.println("E-Ink Reader starting...");
 
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
@@ -159,7 +164,10 @@ void setup() {
   display.begin();
   display.setRotation(DISPLAY_READ_ROTATION);
   unsigned long wake_hold_ms = input_wait_wake_release();
-  bool wake_prev_requested = (should_turn_page_after_wake && wake_hold_ms >= LONG_PRESS_MS);
+  bool wake_prev_requested = false;
+#if !INPUT_SINGLE_BUTTON
+  wake_prev_requested = should_turn_page_after_wake && wake_hold_ms >= LONG_PRESS_MS;
+#endif
   if (should_turn_page_after_wake) {
     Serial.printf("Wake hold=%lu ms, direction=%s\n",
                   wake_hold_ms,
@@ -238,6 +246,7 @@ void loop() {
   if (reader_is_open()) {
     switch (evt) {
       case BTN_SHORT:
+      case BTN_SELECT:
         if (reader_next_page()) {
           reader_render(display);
           state_save(reader_filename(), reader_current_page());
@@ -245,6 +254,7 @@ void loop() {
         }
         break;
       case BTN_LONG:
+      case BTN_DOWN:
         if (reader_prev_page()) {
           reader_render(display);
           state_save(reader_filename(), reader_current_page());

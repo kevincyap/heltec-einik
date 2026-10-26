@@ -1,4 +1,5 @@
 #include <cassert>
+#define ARDUINO_USB_CDC_ON_BOOT 1
 #include "../../src/main.cpp"
 
 unsigned long now_ms;
@@ -54,6 +55,8 @@ ReadingState state_load() {
   return result;
 }
 void state_save(const char *, int) {}
+int state_load_book_page(const char *) { return page; }
+void state_save_book_page(const char *, int) {}
 bool menu_show(EinkDisplay &, char *, size_t) { return false; }
 void wifi_upload_start(EinkDisplay &) {}
 void wifi_upload_tick() {}
@@ -89,12 +92,12 @@ static void reset() {
   for (int &level : pin_levels) level = HIGH;
 }
 
-static void test_wake(bool fast, bool previous) {
+static void test_wake(bool fast, bool held) {
   reset();
   fast_open_ok = fast;
-  wake_hold_ms = previous ? LONG_PRESS_MS : 0;
+  wake_hold_ms = held ? MENU_PRESS_MS : 0;
   setup();
-  assert(page == (previous ? 3 : 5));
+  assert(page == 5);
   assert(renders == 2);
   assert(cache_loads == (fast ? 1 : 0));
   assert(_sleep_after_turn_pending);
@@ -106,11 +109,11 @@ static void test_wake(bool fast, bool previous) {
   assert(slept && _wake_turn_page_pending);
 }
 
-static void test_boundary(bool fast, bool previous) {
+static void test_boundary(bool fast, bool held) {
   reset();
   fast_open_ok = fast;
-  page = _rtc_page = previous ? 0 : 9;
-  wake_hold_ms = previous ? LONG_PRESS_MS : 0;
+  page = _rtc_page = 9;
+  wake_hold_ms = held ? MENU_PRESS_MS : 0;
   setup();
   assert(renders == 1);
   assert(!_sleep_after_turn_pending);
@@ -121,7 +124,7 @@ static void test_awake_turn(ButtonEvent button) {
   _wake_turn_page_pending = false;
   event = button;
   loop();
-  assert(page == (button == BTN_SHORT ? 5 : 3));
+  assert(page == (button == BTN_SHORT || button == BTN_SELECT ? 5 : 3));
   assert(_sleep_after_turn_pending);
 }
 
@@ -180,12 +183,26 @@ static void test_power(bool initialized) {
 }
 
 int main() {
+  reset();
+  Serial.backpressured = true;
+  unsigned long start = now_ms;
+  setup();
+  assert(Serial.tx_timeout_ms == 0);
+  assert(now_ms == start);
+  assert(page == 5 && renders == 2);
+  Serial.backpressured = false;
   for (bool fast : {false, true})
     for (bool previous : {false, true}) test_wake(fast, previous);
   for (bool fast : {false, true})
     for (bool previous : {false, true}) test_boundary(fast, previous);
   test_awake_turn(BTN_SHORT);
   test_awake_turn(BTN_LONG);
+  test_awake_turn(BTN_SELECT);
+  test_awake_turn(BTN_DOWN);
+  reset();
+  event = BTN_UP;
+  loop();
+  assert(page == 4 && renders == 0);
   for (ButtonEvent button : {BTN_SHORT, BTN_LONG, BTN_MENU})
     test_activity_refresh(button, false);
   test_activity_refresh(BTN_SHORT, true);
@@ -194,10 +211,13 @@ int main() {
   mock_wake_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
   setup();
   assert(page == 4 && renders == 1 && !_sleep_after_turn_pending);
+  now_ms = last_activity + SLEEP_TIMEOUT_MS;
+  loop();
+  assert(slept && _wake_turn_page_pending);
   test_frames(OFF, false);
   test_frames(ON, false);
   test_frames(ON, true);
   test_power(false);
   test_power(true);
-  puts("21 power/wake/SPI regression cases passed");
+  puts("Power/wake/SPI and face-button dispatch regressions passed");
 }

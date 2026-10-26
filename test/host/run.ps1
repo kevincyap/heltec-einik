@@ -8,7 +8,7 @@ New-Item -ItemType Directory -Path $output | Out-Null
 try {
     $mocks = Join-Path $PSScriptRoot 'mocks'
     $include = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\include'))
-    foreach ($test in @('test_power', 'test_battery')) {
+    foreach ($test in @('test_power', 'test_battery', 'test_buttons', 'test_menu')) {
         $source = Join-Path $PSScriptRoot "$test.cpp"
         $command = "set `"PATH=${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer;%PATH%`" && call `"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && cd /d `"$output`" && cl /nologo /EHsc /W4 /std:c++14 /I`"$mocks`" /I`"$include`" `"$source`" /Fe`"$output\$test.exe`""
         & $env:ComSpec /d /c $command

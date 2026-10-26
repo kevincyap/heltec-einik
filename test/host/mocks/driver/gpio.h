@@ -1,5 +1,6 @@
 #pragma once
 typedef int gpio_num_t;
+inline int gpio_get_level(gpio_num_t pin) { return digitalRead(pin); }
 extern bool vext_held;
 extern bool deep_sleep_hold;
 inline void gpio_hold_en(gpio_num_t) { vext_held = true; }

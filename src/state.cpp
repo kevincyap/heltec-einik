@@ -44,6 +44,7 @@ void state_save(const char *filename, int page) {
   strncpy(data.filename, filename, sizeof(data.filename) - 1);
   data.page = page;
 
+  unsigned long started = millis();
   File f = LittleFS.open(STATE_FILE, "w");
   if (f) {
     f.write((uint8_t *)&data, sizeof(data));
@@ -53,6 +54,9 @@ void state_save(const char *filename, int page) {
     _cached_page = data.page;
     _cache_valid = true;
   }
+  unsigned long elapsed = millis() - started;
+  if (elapsed >= 50)
+    Serial.printf("[STATE] page=%d save=%lu ms\n", page + 1, elapsed);
 }
 
 void state_clear() {
@@ -60,4 +64,42 @@ void state_clear() {
   _cache_valid = false;
   _cached_filename[0] = '\0';
   _cached_page = -1;
+}
+
+// -- Per-book page position (.pos sidecar files) --
+
+static void pos_path_for(const char *filename, char *out, size_t out_len) {
+  // "/mobydick.txt" -> "/mobydick.pos"
+  const char *dot = strrchr(filename, '.');
+  size_t base_len = dot ? (size_t)(dot - filename) : strlen(filename);
+  if (base_len + 5 >= out_len) base_len = out_len - 5; // ".pos" + NUL
+  memcpy(out, filename, base_len);
+  memcpy(out + base_len, ".pos", 5); // includes NUL
+}
+
+int state_load_book_page(const char *filename) {
+  char path[72];
+  pos_path_for(filename, path, sizeof(path));
+  File f = LittleFS.open(path, "r");
+  if (!f) return 0;
+  int page = 0;
+  if (f.read((uint8_t *)&page, sizeof(page)) != sizeof(page)) page = 0;
+  f.close();
+  return page;
+}
+
+void state_save_book_page(const char *filename, int page) {
+  char path[72];
+  pos_path_for(filename, path, sizeof(path));
+  File f = LittleFS.open(path, "w");
+  if (f) {
+    f.write((uint8_t *)&page, sizeof(page));
+    f.close();
+  }
+}
+
+void state_delete_book_page(const char *filename) {
+  char path[72];
+  pos_path_for(filename, path, sizeof(path));
+  LittleFS.remove(path);
 }

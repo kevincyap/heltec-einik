@@ -104,11 +104,19 @@ bool menu_show(EinkDisplay &display, char *selected, size_t max_len) {
     ButtonEvent evt = button_poll();
     switch (evt) {
       case BTN_SHORT:
+      case BTN_DOWN:
         sel = (sel + 1) % total_items;
         render_menu(display, files, file_count, has_upload, sel);
         break;
+      case BTN_UP:
+        sel = (sel + total_items - 1) % total_items;
+        render_menu(display, files, file_count, has_upload, sel);
+        break;
       case BTN_LONG:
+      case BTN_SELECT:
+#if !INPUT_SINGLE_BUTTON
       case BTN_MENU:
+#endif
         if (has_upload && sel == total_items - 1) {
           // Upload mode selected — signal with empty string
           selected[0] = '\0';

@@ -8,75 +8,134 @@ static unsigned long _last_activity = 0;
 static volatile uint8_t _pending_short = 0;
 
 // =============================================================================
-// Single USER button (Heltec Vision Master E213) — ISR + duration decoding
+// Heltec USER modifier + face buttons. Capture releases even during rendering.
 // =============================================================================
 #if INPUT_SINGLE_BUTTON
 
-static volatile bool _isr_pressed = false;
-static volatile unsigned long _press_start_ms = 0;
-static volatile unsigned long _last_edge_ms = 0;
-static volatile bool _pending_long = false;
-static volatile bool _pending_menu = false;
+static const uint8_t _pins[] = {
+  USER_BUTTON_PIN, FACE_TOP_PIN, FACE_MIDDLE_PIN, FACE_BOTTOM_PIN
+};
+struct KeyState {
+  bool pressed;
+  bool modified;
+  bool ignore_release;
+  unsigned long start;
+};
+static volatile KeyState _keys[4];
+static volatile bool _modifier_used = false;
+static volatile unsigned long _input_activity = 0;
+static const uint8_t EVENT_QUEUE_SIZE = 16;
+static volatile ButtonEvent _events[EVENT_QUEUE_SIZE];
+static volatile unsigned long _event_times[EVENT_QUEUE_SIZE];
+static volatile uint8_t _event_read = 0;
+static volatile uint8_t _event_write = 0;
+static volatile bool _event_overflow = false;
 
-static unsigned long isr_millis() {
-  return (unsigned long)(micros() / 1000UL);
-}
-
-void IRAM_ATTR button_isr() {
-  unsigned long now = isr_millis();
-  if (now - _last_edge_ms < DEBOUNCE_MS / 2)
+static void IRAM_ATTR key_isr(uint8_t index) {
+  unsigned long now = millis();
+  volatile KeyState &key = _keys[index];
+  bool pressed = gpio_get_level((gpio_num_t)_pins[index]) == 0;
+  if (pressed == key.pressed)
     return;
-  _last_edge_ms = now;
-
-  bool pressed = (gpio_get_level((gpio_num_t)USER_BUTTON_PIN) == 0);
-  if (pressed && !_isr_pressed) {
-    _isr_pressed = true;
-    _press_start_ms = now;
+  key.pressed = pressed;
+  _input_activity = now;
+  bool modifier = gpio_get_level((gpio_num_t)USER_BUTTON_PIN) == 0;
+  if (pressed) {
+    key.start = now;
+    key.modified = index != 0 && modifier;
+    if (index == 0) {
+      _modifier_used = false;
+      for (int i = 1; i < 4; i++) {
+        if (_keys[i].pressed) {
+          _keys[i].modified = true;
+          _modifier_used = true;
+        }
+      }
+    } else if (modifier) {
+      _modifier_used = true;
+    }
     return;
   }
+  if (key.ignore_release) {
+    key.ignore_release = false;
+    return;
+  }
+  unsigned long duration = now - key.start;
+  if (duration < DEBOUNCE_MS)
+    return;
 
-  if (!pressed && _isr_pressed) {
-    _isr_pressed = false;
-    unsigned long duration = now - _press_start_ms;
-
-    if (duration >= MENU_PRESS_MS) {
-      _pending_menu = true;
-    } else if (duration >= LONG_PRESS_MS) {
-      _pending_long = true;
-    } else if (duration >= DEBOUNCE_MS) {
-      if (_pending_short < 10)
-        _pending_short++;
+  ButtonEvent event = BTN_NONE;
+  if (index == 0) {
+    if (!_modifier_used && duration < LONG_PRESS_MS)
+      event = BTN_SHORT;
+  } else {
+    bool modified = key.modified || modifier;
+    if (modifier) _modifier_used = true;
+    if (modified) {
+      if (index == 1) event = BTN_MENU;
+    } else {
+      event = index == 1 ? BTN_UP : index == 2 ? BTN_SELECT : BTN_DOWN;
+    }
+  }
+  if (event != BTN_NONE) {
+    uint8_t next = (_event_write + 1) % EVENT_QUEUE_SIZE;
+    if (next == _event_read) {
+      _event_overflow = true;
+    } else {
+      _events[_event_write] = event;
+      _event_times[_event_write] = now;
+      _event_write = next;
     }
   }
 }
 
+static void IRAM_ATTR user_isr() { key_isr(0); }
+static void IRAM_ATTR top_isr() { key_isr(1); }
+static void IRAM_ATTR middle_isr() { key_isr(2); }
+static void IRAM_ATTR bottom_isr() { key_isr(3); }
+
 void button_init() {
-  pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
-  _isr_pressed = (digitalRead(USER_BUTTON_PIN) == LOW);
-  _press_start_ms = millis();
-  _last_edge_ms = millis();
+  unsigned long now = millis();
+  for (int i = 0; i < 4; i++) {
+    pinMode(_pins[i], INPUT_PULLUP);
+    _keys[i].pressed = digitalRead(_pins[i]) == LOW;
+    _keys[i].modified = false;
+    _keys[i].ignore_release = _keys[i].pressed;
+    _keys[i].start = now;
+  }
+  _modifier_used = false;
+  _input_activity = now;
+  _event_read = 0;
+  _event_write = 0;
+  _event_overflow = false;
   _pending_short = 0;
-  _pending_long = false;
-  _pending_menu = false;
-  attachInterrupt(digitalPinToInterrupt(USER_BUTTON_PIN), button_isr, CHANGE);
-  _last_activity = millis();
+  attachInterrupt(digitalPinToInterrupt(USER_BUTTON_PIN), user_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(FACE_TOP_PIN), top_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(FACE_MIDDLE_PIN), middle_isr, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(FACE_BOTTOM_PIN), bottom_isr, CHANGE);
+  _last_activity = now;
 }
 
 ButtonEvent button_poll() {
   ButtonEvent evt = BTN_NONE;
+  unsigned long queued_ms = 0;
 
   noInterrupts();
-  if (_pending_menu) {
-    _pending_menu = false;
-    evt = BTN_MENU;
-  } else if (_pending_long) {
-    _pending_long = false;
-    evt = BTN_LONG;
+  bool overflow = _event_overflow;
+  _event_overflow = false;
+  if (_event_read != _event_write) {
+    evt = _events[_event_read];
+    queued_ms = millis() - _event_times[_event_read];
+    _event_read = (_event_read + 1) % EVENT_QUEUE_SIZE;
   } else if (_pending_short > 0) {
     _pending_short--;
     evt = BTN_SHORT;
   }
   interrupts();
+  if (overflow)
+    Serial.println("Button event queue overflow; input lost");
+  if (queued_ms >= 100)
+    Serial.printf("[INPUT] event=%d queued=%lu ms\n", (int)evt, queued_ms);
 
   if (evt != BTN_NONE)
     _last_activity = millis();
@@ -93,16 +152,8 @@ bool input_woke_from_button(esp_sleep_wakeup_cause_t cause) {
 }
 
 unsigned long input_wait_wake_release() {
-  pinMode(USER_BUTTON_PIN, INPUT_PULLUP);
-  if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
-    return 0;
-
-  unsigned long start = millis();
-  while (digitalRead(USER_BUTTON_PIN) == LOW &&
-         (millis() - start) < WAKE_BUTTON_RELEASE_TIMEOUT_MS) {
-    delay(10);
-  }
-  return millis() - start;
+  // button_init suppresses the wake press's release, without blocking its layer.
+  return 0;
 }
 
 // =============================================================================
@@ -211,6 +262,21 @@ unsigned long input_wait_wake_release() {
 // Shared
 // =============================================================================
 unsigned long button_last_activity() {
+#if INPUT_SINGLE_BUTTON
+  noInterrupts();
+  unsigned long activity = _input_activity;
+  bool held = false;
+  for (int i = 0; i < 4; i++)
+    held = held || _keys[i].pressed;
+  interrupts();
+  if (held)
+    _last_activity = millis();
+  else {
+    unsigned long now = millis();
+    if (now - activity < now - _last_activity)
+      _last_activity = activity;
+  }
+#endif
   return _last_activity;
 }
 

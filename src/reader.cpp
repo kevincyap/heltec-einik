@@ -778,14 +778,19 @@ struct RenderSink : LayoutSink {
 void reader_render(EinkDisplay &display) {
   if (_filename[0] == '\0' || _num_pages == 0) return;
 
+  unsigned long started = millis();
   display.clearMemory();
   display.fillRect(0, 0, display.width(), display.height(), WHITE);
   display.setFont(_font);
   display.setTextColor(BLACK);
   display.setTextWrap(false);
+  unsigned long cleared = millis();
 
   File f = LittleFS.open(_filename, "r");
-  if (!f) return;
+  if (!f) {
+    Serial.printf("Render failed to open: %s\n", _filename);
+    return;
+  }
 
   size_t start = _page_offsets[_current_page];
   size_t end = (_current_page + 1 < _num_pages)
@@ -812,6 +817,7 @@ void reader_render(EinkDisplay &display) {
   display.getTextBounds(indicator, 0, 0, &ix, &iy, &iw, &ih);
   display.setCursor(display.width() - iw - 2, display.height() - ih - 2);
   display.print(indicator);
+  unsigned long drawn = millis();
 
 #if BATTERY_INDICATOR_ENABLED
   int battery_pct = battery_percent();
@@ -828,15 +834,23 @@ void reader_render(EinkDisplay &display) {
   display.print(battery_label);
 #endif
 
+  unsigned long battery_done = millis();
   display.fastmodeOn();
+  unsigned long mode_done = millis();
 
   display.update();
+  unsigned long updated = millis();
 
   if (PARTIAL_CLEANUP_EXTRA_UPDATES > 0) {
     for (int i = 0; i < PARTIAL_CLEANUP_EXTRA_UPDATES; i++) {
       display.update();
     }
   }
+  unsigned long finished = millis();
+  Serial.printf("[RENDER] page=%d clear=%lu text=%lu battery=%lu mode=%lu update=%lu cleanup=%lu total=%lu ms\n",
+                _current_page + 1, cleared - started, drawn - cleared,
+                battery_done - drawn, mode_done - battery_done,
+                updated - mode_done, finished - updated, finished - started);
 }
 
 bool reader_next_page() {

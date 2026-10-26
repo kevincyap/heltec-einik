@@ -4,6 +4,7 @@
 
 #if BATTERY_INDICATOR_ENABLED && defined(ARDUINO_ARCH_ESP32)
 static int _cached_percent = -1;
+static float _cached_voltage_mv = -1;
 static bool _sampled = false;
 static unsigned long _last_sample_ms = 0;
 static unsigned long _sample_interval_ms = 0;
@@ -60,6 +61,7 @@ int battery_percent() {
   uint32_t sum = 0;
   for (unsigned i = 2; i < 14; i++) sum += samples[i];
   float battery_mv = (sum / 12.0f) * BATTERY_DIVIDER_RATIO;
+  _cached_voltage_mv = battery_mv;
   bool plausible = battery_mv >= BATTERY_EMPTY_MV - 200 &&
                    battery_mv <= BATTERY_FULL_MV + 300;
   _cached_percent = plausible ? percent_from_mv(battery_mv) : -1;
@@ -69,6 +71,15 @@ int battery_percent() {
   Serial.printf("[BAT] filtered=%.1f mV, battery=%.1f mV, estimate=%d%%\n",
                 sum / 12.0f, battery_mv, _cached_percent);
   return _cached_percent;
+#else
+  return -1;
+#endif
+}
+
+float battery_voltage_mv() {
+#if BATTERY_INDICATOR_ENABLED && defined(ARDUINO_ARCH_ESP32)
+  battery_percent();
+  return _cached_voltage_mv;
 #else
   return -1;
 #endif

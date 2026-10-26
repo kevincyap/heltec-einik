@@ -14,6 +14,7 @@ esp_sleep_wakeup_cause_t mock_wake_cause;
 
 static int page;
 static int renders;
+static std::vector<bool> sleep_frames;
 static int cache_loads;
 static bool fast_open_ok;
 static unsigned long wake_hold_ms;
@@ -42,7 +43,10 @@ bool reader_open_fast(const char *, uint32_t, int, int start, const int[4]) {
   page = start;
   return fast_open_ok;
 }
-void reader_render(EinkDisplay &) { renders++; }
+void reader_render(EinkDisplay &, bool sleeping) {
+  renders++;
+  sleep_frames.push_back(sleeping);
+}
 bool reader_next_page() { if (page == 9) return false; page++; return true; }
 bool reader_prev_page() { if (page == 0) return false; page--; return true; }
 void reader_load_full_cache(int, int) { cache_loads++; }
@@ -78,6 +82,7 @@ static void reset() {
   last_activity = now_ms;
   page = 4;
   renders = cache_loads = 0;
+  sleep_frames.clear();
   slept = false;
   event = BTN_NONE;
   wake_hold_ms = 0;
@@ -85,6 +90,7 @@ static void reset() {
   mock_wake_cause = ESP_SLEEP_WAKEUP_EXT0;
   _sleep_after_turn_pending = false;
   _wake_turn_page_pending = true;
+  _rtc_reader_locked = false;
   strcpy(_rtc_filename, "/book.txt");
   _rtc_num_pages = 10;
   _rtc_page = page;
@@ -107,6 +113,20 @@ static void test_wake(bool fast, bool held) {
   now_ms = last_activity + SLEEP_TIMEOUT_MS;
   loop();
   assert(slept && _wake_turn_page_pending);
+  assert(_rtc_reader_locked && sleep_frames.back());
+}
+
+static void test_sleep_lock_wake(bool fast, bool boundary, bool advance) {
+  reset();
+  fast_open_ok = fast;
+  page = _rtc_page = boundary ? 9 : 4;
+  _wake_turn_page_pending = advance;
+  _rtc_reader_locked = true;
+  setup();
+  assert(sleep_frames.size() == 2);
+  assert(sleep_frames[0] && !sleep_frames[1]);
+  assert(!_rtc_reader_locked);
+  assert(page == (advance && !boundary ? 5 : boundary ? 9 : 4));
 }
 
 static void test_boundary(bool fast, bool held) {
@@ -195,6 +215,10 @@ int main() {
     for (bool previous : {false, true}) test_wake(fast, previous);
   for (bool fast : {false, true})
     for (bool previous : {false, true}) test_boundary(fast, previous);
+  for (bool fast : {false, true})
+    for (bool boundary : {false, true})
+      for (bool advance : {false, true})
+        test_sleep_lock_wake(fast, boundary, advance);
   test_awake_turn(BTN_SHORT);
   test_awake_turn(BTN_LONG);
   test_awake_turn(BTN_SELECT);

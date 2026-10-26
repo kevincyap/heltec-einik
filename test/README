@@ -22,6 +22,8 @@ temporary directory and removed afterwards.
 Battery tests cover the estimated Li-ion curve, sampling immediately on boot,
 discarding the first conversion, trimmed-mean outlier rejection, sample caching,
 invalid voltage handling and retry recovery.
+Voltage readout tests also verify cached divider-scaled millivolts and that
+zero/out-of-range values remain available for manual calibration.
 
 Firmware compile checks:
 
@@ -33,6 +35,8 @@ Hardware checks after flashing the Heltec target:
 - Press next/previous just before the deadline, including at book boundaries,
   and confirm each press grants another full minute awake.
 - Check several consecutive sleep/wake cycles for ghosting or missing text.
+- While reading, verify a centered footer lock appears before sleep. Only USER
+  wakes the Heltec; the lock clears on wake, including on the final book page.
 - Compare battery-supply sleep current and button-to-page latency with the
   previous firmware. Host tests cannot measure these or validate panel timing.
 
@@ -70,6 +74,9 @@ Linux host checks (GCC, C++11):
 
 On hardware, verify face buttons do not wake the sleeping device, and test
 USER+top with both release orders and while continuing to hold USER after wake.
+
+Power tests verify the sleeping reader frame is restored before clearing its
+lock on fast and fallback wakes, including book boundaries and no-turn wakes.
 
 Investigating page-turn latency:
 - USB debug output is non-blocking so an absent/stalled serial monitor cannot

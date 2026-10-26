@@ -4,7 +4,7 @@
 #include "display.h"
 
 bool reader_open(EinkDisplay &display, const char *filename, int start_page = 0);
-void reader_render(EinkDisplay &display);
+void reader_render(EinkDisplay &display, bool sleeping = false);
 bool reader_next_page();
 bool reader_prev_page();
 int reader_current_page();

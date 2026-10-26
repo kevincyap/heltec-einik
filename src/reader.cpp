@@ -775,7 +775,7 @@ struct RenderSink : LayoutSink {
   bool emit_page(size_t) override { return false; } // render never crosses a page
 };
 
-void reader_render(EinkDisplay &display) {
+void reader_render(EinkDisplay &display, bool sleeping) {
   if (_filename[0] == '\0' || _num_pages == 0) return;
 
   unsigned long started = millis();
@@ -820,12 +820,12 @@ void reader_render(EinkDisplay &display) {
   unsigned long drawn = millis();
 
 #if BATTERY_INDICATOR_ENABLED
-  int battery_pct = battery_percent();
+  float battery_mv = battery_voltage_mv();
   char battery_label[20];
-  if (battery_pct >= 0)
-    snprintf(battery_label, sizeof(battery_label), "Bat %d%%", battery_pct);
+  if (battery_mv >= 0)
+    snprintf(battery_label, sizeof(battery_label), "Bat %.3f V", battery_mv / 1000.0f);
   else
-    snprintf(battery_label, sizeof(battery_label), "Bat --%%");
+    snprintf(battery_label, sizeof(battery_label), "Bat -- V");
 
   int16_t bx, by;
   uint16_t bw, bh;
@@ -833,6 +833,15 @@ void reader_render(EinkDisplay &display) {
   display.setCursor(2, display.height() - bh - 2);
   display.print(battery_label);
 #endif
+
+  if (sleeping) {
+    int x = (display.width() - 9) / 2;
+    int y = display.height() - 11;
+    display.fillRect(x + 2, y, 5, 5, BLACK);
+    display.fillRect(x + 3, y + 1, 3, 3, WHITE);
+    display.fillRect(x, y + 4, 9, 6, BLACK);
+    display.fillRect(x + 4, y + 6, 1, 2, WHITE);
+  }
 
   unsigned long battery_done = millis();
   display.fastmodeOn();

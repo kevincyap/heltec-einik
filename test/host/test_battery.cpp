@@ -46,6 +46,8 @@ int main() {
   readings[0] = 0; // discarded conversion must not affect the result
   assert(battery_percent() == percent_from_mv(800 * BATTERY_DIVIDER_RATIO));
   assert(read_count == 17 && attenuation == ADC_0db);
+  assert(battery_voltage_mv() == 800 * BATTERY_DIVIDER_RATIO);
+  assert(read_count == 17);
   assert(pin_levels[BATTERY_ADC_CTRL_PIN] == LOW);
   assert(now_ms == 21);
   int cached = battery_percent();
@@ -61,6 +63,7 @@ int main() {
   readings[3] = readings[4] = 2000;
   assert(battery_percent() == cached);
   reset(0);
+  assert(battery_voltage_mv() == 0);
   assert(battery_percent() == -1);
   assert(pin_levels[BATTERY_ADC_CTRL_PIN] == LOW);
   now_ms = _last_sample_ms + 9999;
@@ -70,6 +73,7 @@ int main() {
   for (uint32_t &reading : readings) reading = 800;
   assert(battery_percent() == cached && read_count == 17);
   reset(1000);
+  assert(battery_voltage_mv() == 1000 * BATTERY_DIVIDER_RATIO);
   assert(battery_percent() == -1);
   assert(pin_levels[BATTERY_ADC_CTRL_PIN] == LOW);
   puts("Battery curve, startup, outlier filtering, caching and recovery tests passed");

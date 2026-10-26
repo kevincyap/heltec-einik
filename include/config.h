@@ -108,7 +108,7 @@
 // -- Partial refresh management --
 // Set to 0 to disable full-refresh flashes during reading.
 // Set to a positive value (e.g. 20-50) if you want occasional full cleanup.
-#define FULL_REFRESH_INTERVAL 25
+#define FULL_REFRESH_INTERVAL 0
 #define PARTIAL_CLEANUP_EXTRA_UPDATES 0
 
 // -- WiFi secrets/config --

@@ -12,6 +12,7 @@
 EinkDisplay display;
 static bool _sleep_after_turn_pending = false;
 RTC_DATA_ATTR static bool _wake_turn_page_pending = false;
+RTC_DATA_ATTR static bool _rtc_reader_locked = false;
 
 static void mark_page_turned() {
 #if SLEEP_AFTER_PAGE_TURN
@@ -76,6 +77,10 @@ static void enter_sleep(SleepReason reason = SLEEP_REASON_GENERIC) {
       reader_get_page_window(&_rtc_page, &_rtc_num_pages, &_rtc_file_size, _rtc_page_window);
     }
   }
+
+  _rtc_reader_locked = reader_is_open() && reason != SLEEP_REASON_GENERIC;
+  if (_rtc_reader_locked)
+    reader_render(display, true);
 
   Serial.println("Entering deep sleep...");
   Serial.flush();
@@ -150,6 +155,8 @@ void setup() {
 
   esp_sleep_wakeup_cause_t wake_cause = esp_sleep_get_wakeup_cause();
   bool woke_from_button = input_woke_from_button(wake_cause);
+  bool restore_sleep_frame = woke_from_button && _rtc_reader_locked;
+  _rtc_reader_locked = false;
   Serial.printf("Wake cause=%d, rtc wake_flag(before)=%d\n",
                 (int)wake_cause,
                 _wake_turn_page_pending ? 1 : 0);
@@ -187,14 +194,16 @@ void setup() {
     Serial.printf("Fast wake: %s page %d\n", _rtc_filename, _rtc_page);
     if (reader_open_fast(_rtc_filename, _rtc_file_size, _rtc_num_pages,
                          _rtc_page, _rtc_page_window)) {
-      reader_render(display);
+      // Recreate the sleeping frame before removing its lock via a partial update.
+      reader_render(display, restore_sleep_frame);
       bool turned = wake_prev_requested ? reader_prev_page() : reader_next_page();
       if (turned) {
         Serial.printf("Fast wake turn: %s -> page %d\n",
                       wake_prev_requested ? "prev" : "next",
                       reader_current_page());
-        reader_render(display);
       }
+      if (turned || restore_sleep_frame)
+        reader_render(display);
       state_save(reader_filename(), reader_current_page());
       // Reload full offset array so subsequent page turns work correctly.
       // Fast wake only populated 4 nearby offsets; all others are zeroed.
@@ -212,20 +221,22 @@ void setup() {
   if (saved.valid && LittleFS.exists(saved.filename)) {
     Serial.printf("Resuming: %s page %d\n", saved.filename, saved.page);
     if (reader_open(display, saved.filename, saved.page)) {
-      reader_render(display);
+      reader_render(display, restore_sleep_frame);
 
+      bool turned = false;
       if (should_turn_page_after_wake) {
-        bool turned = wake_prev_requested ? reader_prev_page() : reader_next_page();
+        turned = wake_prev_requested ? reader_prev_page() : reader_next_page();
         if (turned) {
           Serial.printf("Wake turn applied: %s -> page %d\n",
                         wake_prev_requested ? "prev" : "next",
                         reader_current_page());
-          reader_render(display);
           mark_page_turned();
         } else {
           Serial.println("Wake turn requested at boundary; staying on current page");
         }
       }
+      if (turned || restore_sleep_frame)
+        reader_render(display);
 
       state_save(reader_filename(), reader_current_page());
       Serial.println("Resume render done");

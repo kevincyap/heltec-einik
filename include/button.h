@@ -15,6 +15,7 @@ enum ButtonEvent {
 void button_init();
 ButtonEvent button_poll();
 unsigned long button_last_activity();
+unsigned long button_last_event_time();
 void button_inject_short_press();
 
 // Board-abstracted deep-sleep wake helpers.

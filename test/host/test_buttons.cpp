@@ -1,4 +1,6 @@
 #include <cassert>
+#include <climits>
+#include "mocks/diagnostics_stub.h"
 #include "../../src/button.cpp"
 
 unsigned long now_ms;
@@ -13,6 +15,8 @@ int ext0_wake_pin;
 
 static void reset() {
   now_ms = 1000;
+  Serial.lines.clear();
+  diagnostic_records.clear();
   for (int &level : pin_levels) level = HIGH;
   mock_wake_cause = ESP_SLEEP_WAKEUP_UNDEFINED;
   wake_mask = 0;
@@ -39,6 +43,15 @@ static void expect(ButtonEvent event) {
 }
 
 #if INPUT_SINGLE_BUTTON
+static void expect_log(ButtonEvent event, int pin, unsigned long held,
+                       unsigned long queued, unsigned long released) {
+  char expected[160];
+  snprintf(expected, sizeof(expected),
+           "[INPUT] event=%d gpio=%u held=%lu queued=%lu released=%lu ms\n",
+           (int)event, (unsigned)pin, held, queued, released);
+  assert(!Serial.lines.empty() && Serial.lines.back() == expected);
+}
+
 static void test_chord(int face, bool modifier_first, bool modifier_released_first) {
   reset();
   edge(modifier_first ? USER_BUTTON_PIN : face, LOW);
@@ -48,7 +61,52 @@ static void test_chord(int face, bool modifier_first, bool modifier_released_fir
   expect(face == FACE_TOP_PIN ? BTN_MENU : BTN_NONE);
 }
 
+static void test_release_guard(int pin, ButtonEvent event, bool poll_during_bounce) {
+  reset();
+  tap(pin);
+  unsigned long released = now_ms;
+  if (poll_during_bounce) {
+    assert(button_poll() == event);
+    assert(button_last_event_time() == released);
+  }
+  edge(pin, LOW, 1);
+  edge(pin, HIGH, 100);
+  edge(pin, LOW, DEBOUNCE_MS - 1);
+  edge(pin, HIGH, DEBOUNCE_MS);
+  assert(button_last_activity() == now_ms);
+  if (!poll_during_bounce) {
+    assert(button_poll() == event);
+    assert(button_last_event_time() == released);
+    expect_log(event, pin, DEBOUNCE_MS, now_ms - released, released);
+  }
+  assert(button_poll() == BTN_NONE);
+  tap(pin);
+  expect(event);
+}
+
+static void test_release_guard_rollover() {
+  reset();
+  now_ms = ULONG_MAX - 100;
+  edge(FACE_MIDDLE_PIN, LOW, 0);
+  edge(FACE_MIDDLE_PIN, HIGH);
+  edge(FACE_MIDDLE_PIN, LOW, 1);
+  edge(FACE_MIDDLE_PIN, HIGH, 100);
+  expect(BTN_SELECT);
+  edge(FACE_MIDDLE_PIN, LOW, DEBOUNCE_MS - 1);
+  edge(FACE_MIDDLE_PIN, HIGH);
+  expect(BTN_NONE);
+  tap(FACE_MIDDLE_PIN);
+  expect(BTN_SELECT);
+}
+
 int main() {
+  for (bool poll : {false, true}) {
+    test_release_guard(USER_BUTTON_PIN, BTN_SHORT, poll);
+    test_release_guard(FACE_TOP_PIN, BTN_UP, poll);
+    test_release_guard(FACE_MIDDLE_PIN, BTN_SELECT, poll);
+    test_release_guard(FACE_BOTTOM_PIN, BTN_DOWN, poll);
+  }
+  test_release_guard_rollover();
   reset();
   for (int pin : {USER_BUTTON_PIN, FACE_TOP_PIN, FACE_MIDDLE_PIN, FACE_BOTTOM_PIN})
     assert(pin_modes[pin] == INPUT_PULLUP && interrupt_handlers[pin]);
@@ -58,12 +116,19 @@ int main() {
   expect(BTN_NONE);
   tap(USER_BUTTON_PIN, MENU_PRESS_MS + 100);
   expect(BTN_NONE);
+  edge(USER_BUTTON_PIN, LOW, 1);
+  edge(USER_BUTTON_PIN, HIGH);
+  expect(BTN_NONE);
   tap(FACE_TOP_PIN);
   expect(BTN_UP);
   tap(FACE_MIDDLE_PIN);
   expect(BTN_SELECT);
+  expect_log(BTN_SELECT, FACE_MIDDLE_PIN, DEBOUNCE_MS, 0, now_ms);
+  assert(button_last_event_time() == now_ms);
+  assert(diagnostic_records.back().when == now_ms);
   tap(FACE_BOTTOM_PIN);
   expect(BTN_DOWN);
+  expect_log(BTN_DOWN, FACE_BOTTOM_PIN, DEBOUNCE_MS, 0, now_ms);
   tap(FACE_MIDDLE_PIN, MENU_PRESS_MS + 100);
   expect(BTN_SELECT);
   for (int face : {FACE_TOP_PIN, FACE_MIDDLE_PIN, FACE_BOTTOM_PIN})
@@ -74,7 +139,9 @@ int main() {
   reset();
   tap(USER_BUTTON_PIN, 5);
   tap(FACE_MIDDLE_PIN, 5);
+  tap(FACE_MIDDLE_PIN, DEBOUNCE_MS - 1);
   expect(BTN_NONE);
+  assert(Serial.lines.empty());
   tap(FACE_MIDDLE_PIN);
   expect(BTN_SELECT);
   edge(USER_BUTTON_PIN, LOW);
@@ -84,14 +151,42 @@ int main() {
   expect(BTN_SHORT);
 
   reset();
+  edge(USER_BUTTON_PIN, LOW);
+  edge(FACE_TOP_PIN, LOW);
+  edge(FACE_TOP_PIN, HIGH);
+  edge(FACE_TOP_PIN, LOW, 1);
+  edge(FACE_TOP_PIN, HIGH);
+  edge(USER_BUTTON_PIN, HIGH);
+  expect(BTN_MENU);
+
+  reset();
+  pin_levels[USER_BUTTON_PIN] = LOW;
+  button_init();
+  edge(USER_BUTTON_PIN, HIGH);
+  edge(USER_BUTTON_PIN, LOW, 1);
+  edge(USER_BUTTON_PIN, HIGH);
+  expect(BTN_NONE);
+  tap(USER_BUTTON_PIN);
+  expect(BTN_SHORT);
+
+  reset();
   tap(FACE_BOTTOM_PIN);
+  unsigned long bottom_released = now_ms;
   tap(FACE_MIDDLE_PIN);
+  unsigned long middle_released = now_ms;
   tap(FACE_TOP_PIN);
   assert(button_poll() == BTN_DOWN);
+  expect_log(BTN_DOWN, FACE_BOTTOM_PIN, DEBOUNCE_MS,
+             now_ms - bottom_released, bottom_released);
+  assert(button_last_event_time() == bottom_released);
+  assert(diagnostic_records.back().when == bottom_released);
   assert(button_poll() == BTN_SELECT);
+  expect_log(BTN_SELECT, FACE_MIDDLE_PIN, DEBOUNCE_MS,
+             now_ms - middle_released, middle_released);
   expect(BTN_UP);
   button_inject_short_press();
   expect(BTN_SHORT);
+  assert(Serial.lines.back() == "[INPUT] event=1 source=injected queued=0 ms\n");
   for (int i = 0; i < EVENT_QUEUE_SIZE; i++)
     tap(FACE_MIDDLE_PIN);
   assert(_event_overflow);

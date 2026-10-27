@@ -16,6 +16,18 @@
 // =============================================================================
 
 #include "config.h"
+#include <Arduino.h>
+#include "diagnostics.h"
+
+inline void display_wait_busy(uint8_t pin, int busy_level) {
+  unsigned long started = millis();
+  while (digitalRead(pin) == busy_level) {
+    unsigned long elapsed = millis() - started;
+    if (elapsed >= DISPLAY_BUSY_TIMEOUT_MS)
+      diagnostics_display_timeout(pin, elapsed);
+    delay(1);
+  }
+}
 
 // -----------------------------------------------------------------------------
 // Heltec Vision Master E213 (heltec-eink-modules)
@@ -53,9 +65,12 @@
     }
 
    protected:
+    void wait() override { waitUntilIdle(); }
+
     // Same LCMEN2R13EFC1 old/new RAM sequence as the backend, but one
     // transaction per buffer instead of one transaction per byte.
     void sendImageData() override {
+      waitUntilIdle();
       if (fastmode_state == OFF) {
         writeFrame(0x10);
         writeFrame(0x13);
@@ -67,8 +82,7 @@
 
    private:
     void waitUntilIdle() {
-      while (digitalRead(PIN_DISPLAY_BUSY) == LOW)
-        delay(1);
+      display_wait_busy(PIN_DISPLAY_BUSY, LOW);
     }
 
     void writeFrame(uint8_t command) {
@@ -116,7 +130,8 @@
       pinMode(EPD_PWR, OUTPUT);
       digitalWrite(EPD_PWR, HIGH);
       SPI.begin(EPD_SCK, -1, EPD_MOSI, EPD_CS);
-      init(115200);
+      epd2.setBusyCallback([](const void *) { display_wait_busy(EPD_BUSY, HIGH); });
+      init(0);
       // Establish a known, clean white baseline so the first partial refresh
       // has a correct differential reference (avoids cold-boot ghosting).
       clearScreen();

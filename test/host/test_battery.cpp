@@ -1,4 +1,5 @@
 #include <cassert>
+#include "mocks/diagnostics_stub.h"
 #define ARDUINO_ARCH_ESP32
 #include "../../src/battery.cpp"
 

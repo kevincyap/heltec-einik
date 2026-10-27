@@ -1,36 +1,81 @@
-
-This directory is intended for PlatformIO Test Runner and project tests.
-
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
-
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
-
-Host power/wake regressions (Windows, Visual C++ build tools required):
+Host regressions (Windows, Visual C++ build tools required):
 
   pwsh -File test\host\run.ps1
 
-These compile the real main.cpp and Heltec display adapter against hardware
-mocks. Cases cover fast and fallback wake with taps and holds, book boundaries,
+These compile the real firmware modules against hardware/filesystem mocks.
+Cases cover fast and fallback wake with taps and holds, book boundaries,
 cold boot, awake navigation, sleep deadlines, framebuffer bytes and transaction
 counts, and peripheral power-off/hold release. Executables are built in a
 temporary directory and removed afterwards.
+Reader and menu timeout regressions advance the clock during the activity check,
+including clock rollover, to catch spurious sleep from unsigned subtraction.
+Repeated middle-button presses must remain awake and retain the full timeout.
 Battery tests cover the estimated Li-ion curve, sampling immediately on boot,
 discarding the first conversion, trimmed-mean outlier rejection, sample caching,
 invalid voltage handling and retry recovery.
 Voltage readout tests also verify cached divider-scaled millivolts and that
 zero/out-of-range values remain available for manual calibration.
 
+Reader tests cover page-index buffer reuse after fast wake and repagination,
+malformed/truncated cache recovery, failed cache writes, unchanged rendered
+text, lock geometry and case-insensitive book filename checks. Cache format and
+layout version are unchanged; invalid caches are rebuilt from the book.
+State tests cover the existing binary state/bookmark formats, skipping repeated
+successful writes, atomic replacement/retry after failed or short writes, and
+bookmark deletion.
+Unchanged per-book bookmarks now skip writes just like the global state file.
+Book-storage tests cover streamed create/replacement, same-size cache
+invalidation, bookmark retention, disconnect/partial-upload cleanup, stale-temp
+recovery, competing mutations, offset/final-chunk errors, root path/length and
+numeric validation, UTF-8/quoted filenames, and checked metadata failures/retry.
+Deletion and HTTP bookmark updates share the same storage owner.
+The default host commands run Heltec tests only. CrowPanel host button coverage
+is opt-in with `pwsh -File test\host\run.ps1 -IncludeCrowPanel`.
+Persistent diagnostics tests cover buffered/periodic flush, partial-write retry,
+64 KiB file rotation, retention across boot IDs, physical marker timestamps,
+CRC32-framed chronological export, partial USB writes, stalled USB timeout,
+storage failures, dropped-record accounting and oversized serial commands.
+Reading top-button tests verify marking without navigation, while directory-Up
+and USER+top keep their original behavior.
+
+USB downloader protocol tests (use PlatformIO's Python, which includes pyserial):
+
+  python -B -m unittest discover -s test -p "test_download_diagnostics.py"
+
+These check boot chatter, fragmented payloads, checksum errors, firmware errors,
+unreasonable lengths and incomplete/timed-out transfers. Version 2 tests check
+readiness, per-256-byte acknowledgments, invalid chunk sizes and compatibility
+with older firmware.
+
+Serial-output tests cover disconnected/backpressured debug output without
+calling the USB writer, positive driver timeout, bounded write chunks and debug
+suppression during exports. Diagnostics tests emulate a host acknowledging only
+received chunks, including a chunk spanning the two rotated log files; they also
+check bad acknowledgments and persistence before the simulated restart.
+Incremental-export tests verify approximately 128 KiB transfers, CRC, at most
+four bounded serial writes / 256 file bytes / 64 RX bytes per poll, interleaved
+application activity, immutable snapshots, buffered/drop accounting, resumed
+flushes, disconnect/backpressure/ACK deadlines, rollover, file errors and fatal
+cancellation. Power tests verify that exports defer idle sleep without disabling
+navigation. Firmware export and recorder implementations are tested together.
+Display tests cover active-low and active-high BUSY deadlines, clock rollover,
+the overridden backend wait and refusal to send frame commands after a timeout.
+On real hardware a timeout restarts the reader after logging the fault.
+
 Firmware compile checks:
 
-  pio run -e vision-master-e213 -e crowpanel-e213
+  pio run -e vision-master-e213
+
+CrowPanel firmware is not built by default; build it explicitly only when needed.
 
 Hardware checks after flashing the Heltec target:
 - Check cold boot, menu/upload, and next/previous navigation.
+- Upload and replace a book of the same size, then check its content and position.
+  Interrupt an upload and confirm the old book remains readable. Check that
+  failed writes/deletes/bookmark updates are shown as errors in the browser.
+- Check filenames containing spaces, apostrophes, quotes and UTF-8 characters in
+  file listing, bookmark selection and deletion. Fractional, empty or negative
+  web bookmark pages must not silently become page zero.
 - Confirm reading and menu sleep after one minute without button activity.
 - Press next/previous just before the deadline, including at book boundaries,
   and confirm each press grants another full minute awake.
@@ -39,11 +84,15 @@ Hardware checks after flashing the Heltec target:
   wakes the Heltec; the lock clears on wake, including on the final book page.
 - Compare battery-supply sleep current and button-to-page latency with the
   previous firmware. Host tests cannot measure these or validate panel timing.
+- Tap top during reading and during a render, then download logs using
+  scripts\download-diagnostics.py --port COM3. Check BUG_MARKER release times,
+  boot IDs, render timings and survival across sleep/reset. Top should not
+  refresh the screen or turn a page; directory-Up and USER+top must still work.
 
 Heltec controls (momentary buttons connect each GPIO to ground; internal pull-ups):
 - Original recessed USER, GPIO 21: tap for next page; hold as a layer modifier.
   Holding alone no longer goes back or opens the directory.
-- Face top, GPIO 42: no action while reading; up in the book directory.
+- Face top, GPIO 42: persistent bug marker while reading; up in the directory.
 - Face middle, GPIO 41: next page while reading; select in the directory.
 - Face bottom, GPIO 40: previous page while reading; down in the directory.
 - Hold USER and click face top to open the book directory. Modified middle and
@@ -57,19 +106,34 @@ Heltec controls (momentary buttons connect each GPIO to ground; internal pull-up
 Host button tests also cover both chord release orders, contact bounce, events
 queued during rendering, held-button activity, wake-release suppression and the
 USER-only wake mask. Menu tests cover up/down/select, wraparound and empty lists.
+Heltec release-guard regressions reproduce the logged 50 ms LOW / 1 ms HIGH /
+100 ms LOW sequence on all four buttons, both with and without polling between
+edges. Only one event may be emitted. Every ignored bounce restarts the required
+50 ms HIGH interval; another press at exactly 50 ms is accepted. Tests retain
+the original release timestamp and cover rollover, modifier bounce, ignored
+long USER holds and wake-release bounce.
+
+One application loop services reading, menu, upload and error modes. The menu
+retains its selection between events; it does not own input polling or sleep.
+Upload retains its ten-minute limit instead of the reading/menu idle timeout.
+Power/menu tests cover mode transitions, upload exit, saved positions, error
+recovery and inactivity independently of diagnostic and input servicing.
+
+Main-loop timing tests simulate slow diagnostic servicing, input polling,
+render/state work and inactivity checks. They verify the exact per-stage fields,
+the two-second threshold and just-below boundary, combined durations, clock
+rollover and a recovering 30-second stall. Warnings must not force a log flush.
 
 Linux host checks (GCC, C++11):
 
   output=$(mktemp -d)
-  for test in test_power test_battery test_buttons test_menu; do
-    g++ -std=c++11 -Wall -Wextra -Itest/host/mocks -Iinclude \
-      test/host/$test.cpp -o "$output/$test" && "$output/$test"
+  for test in test_power test_battery test_buttons test_menu test_state test_book_storage test_reader test_diagnostics test_serial_output; do
+    g++ -std=c++11 -Wall -Wextra -DARDUINO_USB_CDC_ON_BOOT=1 -Itest/host/mocks -Iinclude \
+      test/host/$test.cpp src/serial_output.cpp -o "$output/$test" && "$output/$test"
   done
-  g++ -std=c++11 -Wall -Wextra -DBOARD_CROWPANEL_E213 \
-    -Itest/host/mocks -Iinclude test/host/test_buttons.cpp \
-    -o "$output/test_crowpanel_buttons" && "$output/test_crowpanel_buttons"
   rm -f "$output/test_power" "$output/test_battery" "$output/test_buttons" \
-    "$output/test_menu" "$output/test_crowpanel_buttons"
+    "$output/test_menu" "$output/test_state" "$output/test_book_storage" "$output/test_reader" "$output/test_diagnostics" \
+    "$output/test_serial_output"
   rmdir "$output"
 
 On hardware, verify face buttons do not wake the sleeping device, and test
@@ -78,17 +142,56 @@ USER+top with both release orders and while continuing to hold USER after wake.
 Power tests verify the sleeping reader frame is restored before clearing its
 lock on fast and fallback wakes, including book boundaries and no-turn wakes.
 
+Configuration:
+- include/config.h remains the shared entry point, including board_config.h
+  (hardware/calibration/board capabilities) and app_config.h (layout/timings).
+- Wi-Fi settings are included directly by wifi_upload.cpp only.
+- Compare preprocessor definitions when moving settings: the refactor preserves
+  all 30 existing non-secret Heltec configuration definitions exactly.
+
 Investigating page-turn latency:
 - USB debug output is non-blocking so an absent/stalled serial monitor cannot
   hold up the reading loop. Debug messages may be dropped if its buffer fills.
+  The shared helper checks connection/buffer space and uses a positive SDK
+  timeout to avoid HWCDC's zero-timeout counter underflow. Application code must
+  not bypass it with direct Serial prints or flushes.
 - Run `pio device monitor --baud 115200` and reproduce several page turns.
 - `[RENDER]` reports milliseconds spent clearing the buffer/controller memory,
   drawing text, sampling the battery, configuring partial mode, refreshing the
   panel, and the additional cleanup refresh, plus total render time.
-- `[INPUT]` reports events queued for at least 100 ms before dispatch. The queue
-  preserves presses during blocking display updates; two queued presses produce
-  two turns rather than being discarded.
+- `[INPUT]` reports every accepted Heltec event with its GPIO, raw LOW duration
+  (`held`), queue delay (`queued`), and release time since boot (`released`), all
+  in milliseconds. Logging happens outside the interrupt handler and USB output
+  remains non-blocking. Synthetic events are labeled `source=injected`.
+  Event 6 / GPIO 41 is face middle (next); event 5 / GPIO 40 is face bottom
+  (previous); event 1 / GPIO 21 is side USER (next). The queue preserves presses
+  during display updates; queued presses produce separate turns.
+- Presses shorter than `DEBOUNCE_MS` (currently 50 ms) still produce no event.
+  Button tests verify diagnostic metadata remains paired with each queued event
+  and that diagnostics do not turn rejected short pulses into actions.
 - `[STATE]` reports state-file writes taking at least 50 ms.
+- `LOOP_SLOW` records main-loop passes >= MAIN_LOOP_SLOW_MS (two seconds), split
+  into diag/input/action/idle milliseconds. The usual 25 ms loop delay is not
+  measured. The mode field identifies which application mode was serviced.
+  Menu input waits and USB acknowledgments no longer block a whole loop pass.
+  Display refreshes and filesystem work remain synchronous; use render/state
+  records for detail inside the action stage.
+- Persistent logs add BOOT/SLEEP, INPUT, BUG_MARKER, BATTERY, RENDER_BEGIN/END
+  and STATE_BEGIN/END records. STATE_END reports duration, not write success;
+  existing state persistence errors still go to serial. Logs contain no book
+  text, filenames or Wi-Fi credentials. Export previous then current files with
+  "LOG DUMP" over USB; the supplied downloader verifies length and CRC32. The
+  version 2 frame is "@@DIAG_BEGIN2 <length> 256", followed by host "LOG READY",
+  raw payload chunks each acknowledged with "LOG ACK", then the existing
+  "@@DIAG_END <crc32>" trailer. USB debug output cannot interleave with exports.
+  Logs are capped at two 64 KiB files with a 2 KiB RAM buffer. Routine records
+  flush approximately every two seconds when the main task can run; render
+  starts, boot, markers and sleep request immediate flushing. During export the
+  snapshot is frozen and new records stay in bounded RAM until completion or
+  failure; a marker during export is not yet durable or part of that snapshot.
+  Hard stalls/resets can lose queued or buffered events. Logging adds
+  flash-write latency; the persistent
+  RENDER_END record separates its pre-render log flush from display timings.
 - Compare slow and fast turns before changing refresh/cleanup settings; removing
   a refresh can trade latency for ghosting. Battery-only behavior still needs
   on-device timing confirmation; host mocks cannot measure the panel or flash.

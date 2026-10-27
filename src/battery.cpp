@@ -1,6 +1,8 @@
 #include <Arduino.h>
+#include "serial_output.h"
 #include "config.h"
 #include "battery.h"
+#include "diagnostics.h"
 
 #if BATTERY_INDICATOR_ENABLED && defined(ARDUINO_ARCH_ESP32)
 static int _cached_percent = -1;
@@ -68,8 +70,10 @@ int battery_percent() {
   _sampled = true;
   _last_sample_ms = millis();
   _sample_interval_ms = plausible ? 30000 : 10000;
-  Serial.printf("[BAT] filtered=%.1f mV, battery=%.1f mV, estimate=%d%%\n",
+  debug_serial.printf("[BAT] filtered=%.1f mV, battery=%.1f mV, estimate=%d%%\n",
                 sum / 12.0f, battery_mv, _cached_percent);
+  diagnostics_log("BATTERY adc_mv=%.1f battery_mv=%.1f estimate=%d",
+                  sum / 12.0f, battery_mv, _cached_percent);
   return _cached_percent;
 #else
   return -1;

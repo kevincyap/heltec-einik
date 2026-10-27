@@ -7,9 +7,10 @@ struct ReadingState {
 };
 
 ReadingState state_load();
-void state_save(const char *filename, int page);
-void state_clear();
+bool state_load_checked(ReadingState &result);
+bool state_save(const char *filename, int page);
+bool state_clear();
 
 int  state_load_book_page(const char *filename);
-void state_save_book_page(const char *filename, int page);
-void state_delete_book_page(const char *filename);
+bool state_save_book_page(const char *filename, int page);
+bool state_delete_book_page(const char *filename);

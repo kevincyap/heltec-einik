@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <string>
 
 #define USB_LEFT 0
 #define PIN_PCB_VEXT 18
@@ -11,7 +12,12 @@
 #define DEFAULT_CLK 4
 
 enum Color { BLACK, WHITE };
-struct GFXfont {};
+struct GFXglyph { uint8_t xAdvance; };
+struct GFXfont {
+  const GFXglyph *glyph;
+  uint16_t first;
+  uint16_t last;
+};
 enum Fastmode { OFF, ON };
 struct SPISettings {};
 struct SPIClass {
@@ -35,21 +41,33 @@ namespace Platform {
 
 class LCMEN2R13EFC1 {
  public:
+  struct Rect { int x; int y; int w; int h; Color color; };
+  std::vector<std::string> printed;
+  std::vector<Rect> rectangles;
+  int updates = 0;
   void fastmodeOn() { fastmode_state = ON; }
   void fastmodeOff() { fastmode_state = OFF; }
-  void clearMemory() {}
-  void fillRect(int, int, int, int, Color) {}
+  void clearMemory() { printed.clear(); rectangles.clear(); }
+  void fillRect(int x, int y, int w, int h, Color color) {
+    rectangles.push_back({x, y, w, h, color});
+  }
   void setFont(const void *) {}
   void setTextSize(int) {}
   void setTextColor(Color) {}
   void setCursor(int, int) {}
-  void print(const char *) {}
+  void print(const char *text) { printed.push_back(text); }
+  void setTextWrap(bool) {}
+  void getTextBounds(const char *text, int16_t x, int16_t y,
+                     int16_t *bx, int16_t *by, uint16_t *w, uint16_t *h) {
+    *bx = x; *by = y; *w = uint16_t(strlen(text) * 6); *h = 8;
+  }
   void setRotation(int) {}
   int width() { return 250; }
   int height() { return 122; }
-  void update() {}
+  void update() { updates++; }
 
  protected:
+  virtual void wait() {}
   virtual void sendImageData() {}
   void sendCommand(uint8_t command) { commands.push_back(command); }
   bool begun = false;

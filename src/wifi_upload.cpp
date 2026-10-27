@@ -1,13 +1,18 @@
 #include <Arduino.h>
+#include "serial_output.h"
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <LittleFS.h>
 #include <ESPAsyncWebServer.h>
 #include <string.h>
 #include "config.h"
+#include "wifi_secrets.h"
 #include "wifi_upload.h"
 #include "reader.h"
 #include "state.h"
+#include "book_files.h"
+#include "book_storage.h"
+#include <new>
 #include <Fonts/FreeSans9pt7b.h>
 
 static const char *AP_SSID = WIFI_UPLOAD_AP_SSID;
@@ -22,22 +27,12 @@ static IPAddress _host_ip(0, 0, 0, 0);
 static char _active_ssid[33] = {};
 
 // Upload status shown on e-ink after each file
-static char _last_upload[64] = {};
-static size_t _last_upload_size = 0;
-
-static bool has_txt_extension(const char *name) {
-  size_t len = strlen(name);
-  if (len < 4) return false;
-  const char *ext = name + len - 4;
-  return (ext[0] == '.' &&
-          (ext[1] == 't' || ext[1] == 'T') &&
-          (ext[2] == 'x' || ext[2] == 'X') &&
-          (ext[3] == 't' || ext[3] == 'T'));
-}
+static portMUX_TYPE _status_lock = portMUX_INITIALIZER_UNLOCKED;
+static char _pending_status[80] = {};
 
 // ── Embedded HTML ──────────────────────────────────────────────────────────
 
-static const char UPLOAD_HTML[] PROGMEM = R"rawliteral(
+static const char UPLOAD_HTML[] = R"rawliteral(
 <!DOCTYPE html>
 <html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -97,7 +92,7 @@ function load(){
     sel.innerHTML='';
     d.files.forEach(f=>{
       h+='<tr><td>'+esc(f.name)+'</td><td>'+fmt(f.size)+
-      ' <button class="del" onclick="del(\''+esc(f.name)+'\')">Delete</button></td></tr>';
+      ' <button class="del" data-name="'+encodeURIComponent(f.name)+'">Delete</button></td></tr>';
       let o=document.createElement('option');
       o.value=f.name;o.textContent=f.name.replace(/^\//,'');
       sel.appendChild(o);
@@ -105,12 +100,18 @@ function load(){
     if(!d.files.length) h='<tr><td>No books yet</td></tr>';
     if(prev) sel.value=prev;
     document.getElementById('ft').innerHTML=h;
+    document.querySelectorAll('#ft button.del').forEach(b=>{
+      b.onclick=()=>del(decodeURIComponent(b.dataset.name));
+    });
     document.getElementById('space').textContent=fmt(d.free)+' free';
   });
 }
 function del(n){
   if(!confirm('Delete '+n+'?'))return;
-  fetch('/files?name='+encodeURIComponent(n),{method:'DELETE'}).then(()=>load());
+  fetch('/files?name='+encodeURIComponent(n),{method:'DELETE'}).then(async r=>{
+    if(!r.ok)throw new Error(await r.text());
+    load();
+  }).catch(e=>alert(e.message));
 }
 document.getElementById('uf').onsubmit=function(e){
   e.preventDefault();
@@ -131,7 +132,7 @@ function loadState(){
     if(d.valid){
       el.textContent='Current: '+d.filename.replace(/^\//,'')+' \u2014 page '+d.page;
       let sel=document.getElementById('bsel');
-      if(sel.querySelector('option[value="'+d.filename+'"]')) sel.value=d.filename;
+      if(Array.from(sel.options).some(o=>o.value===d.filename)) sel.value=d.filename;
       document.getElementById('pnum').value=d.page;
     } else {
       el.textContent='No bookmark saved';
@@ -140,7 +141,7 @@ function loadState(){
 }
 function setPage(){
   let n=document.getElementById('bsel').value;
-  let p=parseInt(document.getElementById('pnum').value)||0;
+  let p=document.getElementById('pnum').value;
   let msg=document.getElementById('smsg');
   msg.textContent='';
   if(!n){msg.textContent='No book selected';return;}
@@ -215,11 +216,29 @@ static void draw_upload_screen(const char *status_line = nullptr) {
 // ── Server handlers ────────────────────────────────────────────────────────
 
 static void handle_root(AsyncWebServerRequest *request) {
-  request->send_P(200, "text/html", UPLOAD_HTML);
+  request->send(200, "text/html", UPLOAD_HTML);
 }
 
 static void handle_captive(AsyncWebServerRequest *request) {
   request->redirect("http://" + _host_ip.toString());
+}
+
+static void append_json_string(String &json, const char *text) {
+  json += '"';
+  for (; *text; ++text) {
+    unsigned char c = (unsigned char)*text;
+    if (c == '"' || c == '\\') {
+      json += '\\';
+      json += *text;
+    } else if (c < 32) {
+      char escaped[7];
+      snprintf(escaped, sizeof(escaped), "\\u%04x", (unsigned)c);
+      json += escaped;
+    } else {
+      json += *text;
+    }
+  }
+  json += '"';
 }
 
 static void handle_file_list(AsyncWebServerRequest *request) {
@@ -237,7 +256,9 @@ static void handle_file_list(AsyncWebServerRequest *request) {
           if (!first) json += ",";
           // Ensure name has leading /
           if (name[0] != '/') name = "/" + name;
-          json += "{\"name\":\"" + name + "\",\"size\":" + String(f.size()) + "}";
+          json += "{\"name\":";
+          append_json_string(json, name.c_str());
+          json += ",\"size\":" + String(f.size()) + "}";
           first = false;
         }
       }
@@ -255,56 +276,59 @@ static void handle_file_delete(AsyncWebServerRequest *request) {
     return;
   }
   String name = request->getParam("name")->value();
-  if (LittleFS.exists(name)) {
-    LittleFS.remove(name);
-    reader_delete_book_cache(name.c_str());
-    state_delete_book_page(name.c_str());
-    request->send(200, "text/plain", "Deleted");
-  } else {
-    request->send(404, "text/plain", "File not found");
-  }
+  BookStorageResult result = book_storage_delete(name.c_str());
+  request->send(book_storage_http_status(result), "text/plain", book_storage_message(result));
+}
+
+static void cleanup_upload(AsyncWebServerRequest *request) {
+  BookUpload *upload = static_cast<BookUpload *>(request->_tempObject);
+  // The request destructor frees _tempObject with free(), not delete.
+  request->_tempObject = nullptr;
+  delete upload;
 }
 
 static void handle_upload_complete(AsyncWebServerRequest *request) {
-  if (_last_upload[0]) {
-    char status[80];
-    snprintf(status, sizeof(status), "Uploaded: %s (%u B)", _last_upload, (unsigned)_last_upload_size);
-    draw_upload_screen(status);
+  if (request->getResponse()) return;
+  BookUpload *upload = static_cast<BookUpload *>(request->_tempObject);
+  BookStorageResult result = upload ? upload->commit() : BookStorageResult::IncompleteUpload;
+  if (result == BookStorageResult::Ok) {
+    char status[80] = {};
+    snprintf(status, sizeof(status), "Uploaded: %s (%u B)", upload->path(), (unsigned)upload->size());
+    portENTER_CRITICAL(&_status_lock);
+    memcpy(_pending_status, status, sizeof(status));
+    portEXIT_CRITICAL(&_status_lock);
   }
-  request->send(200, "text/plain", "OK");
+  cleanup_upload(request);
+  request->send(book_storage_http_status(result), "text/plain", book_storage_message(result));
 }
 
 static void handle_upload_data(AsyncWebServerRequest *request, String filename,
                                size_t index, uint8_t *data, size_t len, bool final) {
-  if (!index) {
-    // Normalize filename
-    if (!filename.startsWith("/")) filename = "/" + filename;
-    Serial.printf("Upload start: %s\n", filename.c_str());
-    request->_tempFile = LittleFS.open(filename, "w");
-    strncpy(_last_upload, filename.c_str(), sizeof(_last_upload) - 1);
-    _last_upload_size = 0;
-  }
-
-  if (request->_tempFile) {
-    request->_tempFile.write(data, len);
-    _last_upload_size += len;
-  }
-
-  if (final) {
-    if (request->_tempFile) {
-      request->_tempFile.close();
+  if (request->getResponse()) return;
+  BookUpload *upload = static_cast<BookUpload *>(request->_tempObject);
+  if (!upload) {
+    upload = new (std::nothrow) BookUpload();
+    if (!upload) {
+      request->send(book_storage_http_status(BookStorageResult::MemoryFailed), "text/plain",
+                    book_storage_message(BookStorageResult::MemoryFailed));
+      return;
     }
-    Serial.printf("Upload end: %s (%u bytes)\n", _last_upload, (unsigned)_last_upload_size);
+    request->_tempObject = upload;
+    request->onDisconnect([request]() { cleanup_upload(request); });
+    upload->begin(filename.c_str());
+  } else if (index == 0) {
+    upload->reject();
   }
+  upload->append(index, data, len, final);
 }
 
 static void handle_state_get(AsyncWebServerRequest *request) {
   ReadingState s = state_load();
   String json;
   if (s.valid) {
-    json = "{\"valid\":true,\"filename\":\"";
-    json += s.filename;
-    json += "\",\"page\":";
+    json = "{\"valid\":true,\"filename\":";
+    append_json_string(json, s.filename);
+    json += ",\"page\":";
     json += String(s.page);
     json += "}";
   } else {
@@ -319,14 +343,13 @@ static void handle_state_set(AsyncWebServerRequest *request) {
     return;
   }
   String filename = request->getParam("filename", true)->value();
-  int page = request->getParam("page", true)->value().toInt();
-  if (filename.length() == 0 || !LittleFS.exists(filename)) {
-    request->send(404, "text/plain", "File not found");
+  int page;
+  if (!book_storage_page(request->getParam("page", true)->value().c_str(), page)) {
+    request->send(400, "text/plain", book_storage_message(BookStorageResult::InvalidPage));
     return;
   }
-  state_save(filename.c_str(), page);
-  state_save_book_page(filename.c_str(), page);
-  request->send(200, "text/plain", "OK");
+  BookStorageResult result = book_storage_set_page(filename.c_str(), page);
+  request->send(book_storage_http_status(result), "text/plain", book_storage_message(result));
 }
 
 static bool start_wifi_sta() {
@@ -351,7 +374,7 @@ static bool start_wifi_sta() {
   strncpy(_active_ssid, WIFI_UPLOAD_STA_SSID, sizeof(_active_ssid) - 1);
   _active_ssid[sizeof(_active_ssid) - 1] = '\0';
 
-  Serial.printf("WiFi STA connected: %s at %s\n", _active_ssid, _host_ip.toString().c_str());
+  debug_serial.printf("WiFi STA connected: %s at %s\n", _active_ssid, _host_ip.toString().c_str());
   return true;
 }
 
@@ -366,7 +389,7 @@ static void start_wifi_ap() {
   strncpy(_active_ssid, AP_SSID, sizeof(_active_ssid) - 1);
   _active_ssid[sizeof(_active_ssid) - 1] = '\0';
 
-  Serial.printf("WiFi AP started: %s at %s\n", AP_SSID, _host_ip.toString().c_str());
+  debug_serial.printf("WiFi AP started: %s at %s\n", AP_SSID, _host_ip.toString().c_str());
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -414,6 +437,12 @@ void wifi_upload_start(EinkDisplay &display) {
 
 void wifi_upload_tick() {
   if (_dns) _dns->processNextRequest();
+  char status[sizeof(_pending_status)];
+  portENTER_CRITICAL(&_status_lock);
+  memcpy(status, _pending_status, sizeof(status));
+  _pending_status[0] = '\0';
+  portEXIT_CRITICAL(&_status_lock);
+  if (status[0]) draw_upload_screen(status);
 }
 
 void wifi_upload_stop() {
@@ -437,10 +466,12 @@ void wifi_upload_stop() {
   WiFi.mode(WIFI_OFF);
   _active = false;
   _display_ptr = nullptr;
-  _last_upload[0] = '\0';
+  portENTER_CRITICAL(&_status_lock);
+  _pending_status[0] = '\0';
+  portEXIT_CRITICAL(&_status_lock);
   _active_ssid[0] = '\0';
 
-  Serial.println("Upload mode stopped");
+  debug_serial.println("Upload mode stopped");
 }
 
 bool wifi_upload_active() {

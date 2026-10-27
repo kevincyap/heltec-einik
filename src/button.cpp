@@ -1,10 +1,13 @@
 #include <Arduino.h>
+#include "serial_output.h"
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 #include "config.h"
 #include "button.h"
+#include "diagnostics.h"
 
 static unsigned long _last_activity = 0;
+static unsigned long _last_event_ms = 0;
 static volatile uint8_t _pending_short = 0;
 
 // =============================================================================
@@ -19,7 +22,9 @@ struct KeyState {
   bool pressed;
   bool modified;
   bool ignore_release;
+  bool release_guard;
   unsigned long start;
+  unsigned long released;
 };
 static volatile KeyState _keys[4];
 static volatile bool _modifier_used = false;
@@ -27,6 +32,8 @@ static volatile unsigned long _input_activity = 0;
 static const uint8_t EVENT_QUEUE_SIZE = 16;
 static volatile ButtonEvent _events[EVENT_QUEUE_SIZE];
 static volatile unsigned long _event_times[EVENT_QUEUE_SIZE];
+static volatile uint8_t _event_pins[EVENT_QUEUE_SIZE];
+static volatile unsigned long _event_durations[EVENT_QUEUE_SIZE];
 static volatile uint8_t _event_read = 0;
 static volatile uint8_t _event_write = 0;
 static volatile bool _event_overflow = false;
@@ -41,6 +48,12 @@ static void IRAM_ATTR key_isr(uint8_t index) {
   _input_activity = now;
   bool modifier = gpio_get_level((gpio_num_t)USER_BUTTON_PIN) == 0;
   if (pressed) {
+    // A brief release glitch must not re-arm an already handled press.
+    if (key.release_guard) {
+      if (now - key.released < DEBOUNCE_MS)
+        return;
+      key.release_guard = false;
+    }
     key.start = now;
     key.modified = index != 0 && modifier;
     if (index == 0) {
@@ -56,13 +69,21 @@ static void IRAM_ATTR key_isr(uint8_t index) {
     }
     return;
   }
+  if (key.release_guard) {
+    key.released = now;
+    return;
+  }
   if (key.ignore_release) {
     key.ignore_release = false;
+    key.release_guard = true;
+    key.released = now;
     return;
   }
   unsigned long duration = now - key.start;
   if (duration < DEBOUNCE_MS)
     return;
+  key.release_guard = true;
+  key.released = now;
 
   ButtonEvent event = BTN_NONE;
   if (index == 0) {
@@ -84,6 +105,8 @@ static void IRAM_ATTR key_isr(uint8_t index) {
     } else {
       _events[_event_write] = event;
       _event_times[_event_write] = now;
+      _event_pins[_event_write] = _pins[index];
+      _event_durations[_event_write] = duration;
       _event_write = next;
     }
   }
@@ -101,7 +124,9 @@ void button_init() {
     _keys[i].pressed = digitalRead(_pins[i]) == LOW;
     _keys[i].modified = false;
     _keys[i].ignore_release = _keys[i].pressed;
+    _keys[i].release_guard = false;
     _keys[i].start = now;
+    _keys[i].released = now;
   }
   _modifier_used = false;
   _input_activity = now;
@@ -114,31 +139,51 @@ void button_init() {
   attachInterrupt(digitalPinToInterrupt(FACE_MIDDLE_PIN), middle_isr, CHANGE);
   attachInterrupt(digitalPinToInterrupt(FACE_BOTTOM_PIN), bottom_isr, CHANGE);
   _last_activity = now;
+  _last_event_ms = now;
 }
 
 ButtonEvent button_poll() {
   ButtonEvent evt = BTN_NONE;
   unsigned long queued_ms = 0;
+  unsigned long press_ms = 0;
+  unsigned long released_ms = 0;
+  uint8_t source_pin = 0;
+  bool physical_event = false;
 
   noInterrupts();
   bool overflow = _event_overflow;
   _event_overflow = false;
   if (_event_read != _event_write) {
     evt = _events[_event_read];
-    queued_ms = millis() - _event_times[_event_read];
+    released_ms = _event_times[_event_read];
+    queued_ms = millis() - released_ms;
+    source_pin = _event_pins[_event_read];
+    press_ms = _event_durations[_event_read];
+    physical_event = true;
     _event_read = (_event_read + 1) % EVENT_QUEUE_SIZE;
   } else if (_pending_short > 0) {
     _pending_short--;
     evt = BTN_SHORT;
   }
   interrupts();
-  if (overflow)
-    Serial.println("Button event queue overflow; input lost");
-  if (queued_ms >= 100)
-    Serial.printf("[INPUT] event=%d queued=%lu ms\n", (int)evt, queued_ms);
+  if (overflow) {
+    debug_serial.println("Button event queue overflow; input lost");
+    diagnostics_log("ERROR input_queue_overflow");
+  }
+  if (physical_event) {
+    debug_serial.printf("[INPUT] event=%d gpio=%u held=%lu queued=%lu released=%lu ms\n",
+                  (int)evt, (unsigned)source_pin, press_ms, queued_ms, released_ms);
+    diagnostics_log_at(released_ms, "INPUT event=%d gpio=%u held=%lu queued=%lu",
+                       (int)evt, (unsigned)source_pin, press_ms, queued_ms);
+  } else if (evt != BTN_NONE) {
+    debug_serial.printf("[INPUT] event=%d source=injected queued=0 ms\n", (int)evt);
+    diagnostics_log("INPUT event=%d source=injected", (int)evt);
+  }
 
-  if (evt != BTN_NONE)
+  if (evt != BTN_NONE) {
     _last_activity = millis();
+    _last_event_ms = physical_event ? released_ms : _last_activity;
+  }
 
   return evt;
 }
@@ -198,6 +243,7 @@ void button_init() {
   }
   _pending_short = 0;
   _last_activity = millis();
+  _last_event_ms = _last_activity;
 }
 
 ButtonEvent button_poll() {
@@ -214,6 +260,9 @@ ButtonEvent button_poll() {
       _pressed[i] = false;
       _last_change[i] = now;
       _last_activity = now;
+      _last_event_ms = now;
+      diagnostics_log_at(now, "INPUT event=%d gpio=%u",
+                         (int)_keys[i].evt, (unsigned)_keys[i].pin);
       return _keys[i].evt;
     }
   }
@@ -221,6 +270,8 @@ ButtonEvent button_poll() {
   if (_pending_short > 0) {
     _pending_short--;
     _last_activity = now;
+    _last_event_ms = now;
+    diagnostics_log_at(now, "INPUT event=%d source=injected", (int)BTN_SHORT);
     return BTN_SHORT;
   }
 
@@ -279,6 +330,8 @@ unsigned long button_last_activity() {
 #endif
   return _last_activity;
 }
+
+unsigned long button_last_event_time() { return _last_event_ms; }
 
 void button_inject_short_press() {
   noInterrupts();

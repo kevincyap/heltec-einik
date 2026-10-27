@@ -1,27 +1,20 @@
 #include <Arduino.h>
 #include <LittleFS.h>
-#include <esp_sleep.h>
 #include "config.h"
 #include "menu.h"
 #include "button.h"
+#include "book_files.h"
 #include <Fonts/FreeSans9pt7b.h>
 
 #define MAX_FILES 20
 
 static const char UPLOAD_ENTRY[] = "[Upload Books]";
-
-static bool has_txt_extension(const char *name) {
-  size_t len = strlen(name);
-  if (len < 4) return false;
-  const char *ext = name + len - 4;
-  return (ext[0] == '.' &&
-          (ext[1] == 't' || ext[1] == 'T') &&
-          (ext[2] == 'x' || ext[2] == 'X') &&
-          (ext[3] == 't' || ext[3] == 'T'));
-}
+static char files[MAX_FILES][64];
+static int file_count;
+static int sel;
 
 static void render_menu(EinkDisplay &display, char files[][64], int count,
-                        bool has_upload, int sel) {
+                        int sel) {
   display.clearMemory();
   display.fillRect(0, 0, display.width(), display.height(), WHITE);
 
@@ -37,7 +30,7 @@ static void render_menu(EinkDisplay &display, char files[][64], int count,
   int list_top = 20;
   int max_visible = (display.height() - list_top - MARGIN_BOTTOM) / LINE_HEIGHT;
 
-  int total_items = count + (has_upload ? 1 : 0);
+  int total_items = count + 1;
   int scroll = 0;
   if (sel >= max_visible)
     scroll = sel - max_visible + 1;
@@ -52,7 +45,7 @@ static void render_menu(EinkDisplay &display, char files[][64], int count,
     }
 
     display.setCursor(MARGIN_X + 2, y);
-    if (has_upload && i == total_items - 1) {
+    if (i == count) {
       // Last item is the upload option
       display.print(UPLOAD_ENTRY);
     } else {
@@ -70,9 +63,9 @@ static void render_menu(EinkDisplay &display, char files[][64], int count,
   display.update();
 }
 
-bool menu_show(EinkDisplay &display, char *selected, size_t max_len) {
-  char files[MAX_FILES][64];
-  int file_count = 0;
+bool menu_begin(EinkDisplay &display) {
+  file_count = 0;
+  sel = 0;
 
   File root = LittleFS.open("/");
   if (!root || !root.isDirectory()) return false;
@@ -95,45 +88,32 @@ bool menu_show(EinkDisplay &display, char *selected, size_t max_len) {
   }
   root.close();
 
-  int sel = 0;
-  bool has_upload = true;
-  int total_items = file_count + (has_upload ? 1 : 0);
-  render_menu(display, files, file_count, has_upload, sel);
+  render_menu(display, files, file_count, sel);
+  return true;
+}
 
-  while (true) {
-    ButtonEvent evt = button_poll();
-    switch (evt) {
-      case BTN_SHORT:
-      case BTN_DOWN:
-        sel = (sel + 1) % total_items;
-        render_menu(display, files, file_count, has_upload, sel);
-        break;
-      case BTN_UP:
-        sel = (sel + total_items - 1) % total_items;
-        render_menu(display, files, file_count, has_upload, sel);
-        break;
-      case BTN_LONG:
-      case BTN_SELECT:
+MenuResult menu_handle_event(EinkDisplay &display, ButtonEvent event) {
+  int total_items = file_count + 1;
+  switch (event) {
+    case BTN_SHORT:
+    case BTN_DOWN:
+      sel = (sel + 1) % total_items;
+      render_menu(display, files, file_count, sel);
+      break;
+    case BTN_UP:
+      sel = (sel + total_items - 1) % total_items;
+      render_menu(display, files, file_count, sel);
+      break;
+    case BTN_LONG:
+    case BTN_SELECT:
 #if !INPUT_SINGLE_BUTTON
-      case BTN_MENU:
+    case BTN_MENU:
 #endif
-        if (has_upload && sel == total_items - 1) {
-          // Upload mode selected — signal with empty string
-          selected[0] = '\0';
-          return true;
-        }
-        strncpy(selected, files[sel], max_len - 1);
-        selected[max_len - 1] = '\0';
-        return true;
-      default:
-        // Sleep if idle too long on menu screen
-        if (millis() - button_last_activity() >= SLEEP_TIMEOUT_MS) {
-          display.prepareSleep();
-          input_enable_deep_sleep_wake();
-          esp_deep_sleep_start();
-        }
-        delay(10);
-        break;
-    }
+      if (sel == file_count)
+        return {MenuAction::Upload, nullptr};
+      return {MenuAction::Book, files[sel]};
+    default:
+      break;
   }
+  return {MenuAction::None, nullptr};
 }
